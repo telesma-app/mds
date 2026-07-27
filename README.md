@@ -1,25 +1,91 @@
 # go-ctap/mds
 
-`go-ctap/mds` fetches, verifies, caches, and queries FIDO Metadata Service
-(MDS3) blobs.
+[![Go Reference](https://pkg.go.dev/badge/github.com/go-ctap/mds.svg)](https://pkg.go.dev/github.com/go-ctap/mds)
+[![Go](https://github.com/go-ctap/mds/actions/workflows/go.yml/badge.svg)](https://github.com/go-ctap/mds/actions/workflows/go.yml)
 
-The client verifies the compact JWT signature, validates the MDS signing
-certificate chain and its revocation status, rejects blob rollback, and indexes
-metadata entries by AAGUID.
+`go-ctap/mds` is a Go client for the FIDO Metadata Service (MDS3).
 
-`AssessAttestation` can then validate an already format-verified authenticator
-attestation certificate chain against roots in the matching metadata statement
-and report relevant authenticator statuses. The result contains trust facts and
-stable issue codes; relying-party acceptance policy remains outside this module.
+> [!WARNING]
+> This module is under active development. Its public API may change during `v0.x`.
 
-## Usage
+## Features
+
+- downloads and verifies the signed FIDO metadata BLOB;
+- validates the signing certificate chain and CRLs;
+- rejects metadata rollback;
+- caches verified metadata and limits network requests;
+- looks up metadata by AAGUID;
+- checks verified authenticator attestations against metadata roots and status
+  reports.
+
+## Installation
+
+```sh
+go get github.com/go-ctap/mds@latest
+```
+
+See [`go.mod`](go.mod) for the required Go version.
+
+## Quick start
 
 ```go
-client := &mds.Client{}
+client := mds.NewClient()
+
+result, err := client.Lookup(ctx, aaguid, mds.LookupOptions{})
+if err != nil {
+    return err
+}
+if result.Found {
+    fmt.Println(result.Entry.MetadataStatement.Description)
+}
+```
+
+`Lookup` uses the official FIDO MDS endpoint by default.
+
+## Caching
+
+The client always checks its verified cache before making a network request.
+It uses an in-memory cache and stores the signed BLOB in the platform user
+cache directory.
+
+Use `WithCacheDir` when the application owns the cache location:
+
+```go
+client := mds.NewClient(
+    mds.WithCacheDir("/var/cache/my-service/fido-mds"),
+)
+```
+
+Automatic refresh runs at most once per day. An explicit refresh is limited to
+one request per hour for each cache key:
+
+```go
 result, err := client.Lookup(ctx, aaguid, mds.LookupOptions{
-    AllowStaleOnFetchError: true,
+    Refresh: true,
 })
 ```
 
-Format-level attestation parsing and signature verification belongs to
+The request includes `localCopySerial` when a local BLOB exists. If refresh
+fails, the client returns the last verified local BLOB and delays the next
+automatic attempt.
+
+## Attestation checks
+
+`AssessAttestation` compares an already verified authenticator attestation
+certificate chain with the matching metadata statement. It reports trust facts
+and authenticator status issues.
+
+Attestation parsing and format-level signature verification belong to
 [`github.com/go-ctap/ctap/attestation`](https://pkg.go.dev/github.com/go-ctap/ctap/attestation).
+The relying party remains responsible for its acceptance policy.
+
+## Testing
+
+```sh
+go test ./...
+go vet ./...
+```
+
+## License
+
+Apache License 2.0. See [`LICENSE`](LICENSE).

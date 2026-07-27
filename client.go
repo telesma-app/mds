@@ -28,8 +28,9 @@ const (
 	DefaultRefreshInterval = 24 * time.Hour
 	DefaultMaxBlobBytes    = 64 << 20 // 64 MiB
 
-	cacheNamespace = "go-ctap"
-	cacheDirName   = "mds"
+	minRequestDelay = time.Hour
+	cacheNamespace  = "go-ctap"
+	cacheDirName    = "mds"
 )
 
 var (
@@ -62,11 +63,6 @@ type Client struct {
 	CacheDir     string
 	TrustAnchors []*x509.Certificate
 
-	// RefreshInterval controls how long an already verified local copy is used
-	// before Lookup attempts a conditional refresh. Zero means DefaultRefreshInterval.
-	// A negative value disables automatic refresh and only refreshes when LookupOptions.Refresh is true.
-	RefreshInterval time.Duration
-
 	// MaxBlobBytes bounds metadata BLOB downloads. Zero means DefaultMaxBlobBytes.
 	MaxBlobBytes int64
 
@@ -79,14 +75,6 @@ type LookupOptions struct {
 	// Refresh forces a conditional network refresh attempt, but still loads the
 	// local copy first so localCopySerial and anti-rollback checks keep working.
 	Refresh bool
-
-	// MaxAge overrides Client.RefreshInterval for this lookup. Zero uses the
-	// client default. A negative value disables automatic refresh for this call.
-	MaxAge time.Duration
-
-	// AllowStaleOnFetchError returns the already verified local copy if refresh
-	// fails. This is an availability trade-off; leave false for strict behavior.
-	AllowStaleOnFetchError bool
 }
 
 // Blob is a verified and indexed MDS payload.
@@ -102,7 +90,6 @@ type Blob struct {
 	Entries map[uuid.UUID]*appmds.PayloadEntry
 
 	CachedAt time.Time
-	ETag     string
 }
 
 // Lookup returns verified MDS data for one AAGUID.
@@ -156,8 +143,8 @@ func (c *Client) blob(ctx context.Context, source string, opts LookupOptions) (*
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, false, err
 		}
-		if local != nil && opts.AllowStaleOnFetchError {
-			return local, true, nil
+		if local != nil {
+			return c.markLocalFresh(source, cacheKey, local), true, nil
 		}
 	}
 
@@ -183,8 +170,7 @@ func (c *Client) refreshBlob(ctx context.Context, source, cacheKey string, local
 	}
 
 	if local != nil && remote.Number < local.Number {
-		c.cache().Set(cacheKey, local)
-		return local, true, nil
+		return c.markLocalFresh(source, cacheKey, local), true, nil
 	}
 
 	cachedAt, err := c.storeDiskCache(source, raw)
@@ -229,23 +215,17 @@ func (c *Client) loadLocal(ctx context.Context, source, cacheKey string) *Blob {
 
 func (c *Client) shouldRefresh(local *Blob, opts LookupOptions) bool {
 	if opts.Refresh {
-		return true
-	}
-
-	maxAge := opts.MaxAge
-	if maxAge == 0 {
-		maxAge = c.refreshInterval()
-	}
-
-	if maxAge < 0 {
-		return false
+		if local.CachedAt.IsZero() {
+			return true
+		}
+		return !c.now().Before(local.CachedAt.Add(minRequestDelay))
 	}
 
 	if local.CachedAt.IsZero() {
 		return true
 	}
 
-	return !c.now().Before(local.CachedAt.Add(maxAge))
+	return !c.now().Before(local.CachedAt.Add(DefaultRefreshInterval))
 }
 
 func (c *Client) fetchAndVerify(ctx context.Context, source string, local *Blob) (*Blob, []byte, bool, error) {
@@ -282,8 +262,6 @@ func (c *Client) fetchAndVerify(ctx context.Context, source string, local *Blob)
 	if err != nil {
 		return nil, nil, false, err
 	}
-	blob.ETag = resp.Header.Get("ETag")
-
 	return blob, body, false, nil
 }
 
@@ -487,14 +465,6 @@ func (c *Client) cacheDir() string {
 	}
 
 	return filepath.Join(dir, cacheNamespace, cacheDirName)
-}
-
-func (c *Client) refreshInterval() time.Duration {
-	if c.RefreshInterval == 0 {
-		return DefaultRefreshInterval
-	}
-
-	return c.RefreshInterval
 }
 
 func (c *Client) maxBlobBytes() int64 {

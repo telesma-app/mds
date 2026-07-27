@@ -35,6 +35,44 @@ func statusTransport(status int) http.RoundTripper {
 	})
 }
 
+func TestNewClientDefaultsMatchZeroValue(t *testing.T) {
+	client := NewClient(nil)
+
+	if client.source() != DefaultSource {
+		t.Fatalf("source = %q, want %q", client.source(), DefaultSource)
+	}
+	if client.cache() != defaultCache {
+		t.Fatal("cache does not use package-wide default")
+	}
+	if client.maxBlobBytes() != DefaultMaxBlobBytes {
+		t.Fatalf("max blob bytes = %d, want %d", client.maxBlobBytes(), DefaultMaxBlobBytes)
+	}
+	if client.cacheDir() == "" {
+		t.Fatal("default disk cache is disabled")
+	}
+}
+
+func TestWithCacheDirControlsWrites(t *testing.T) {
+	const source = "https://mds.example.test/cache-write"
+
+	cacheDir := t.TempDir()
+	client := NewClient(WithCacheDir(cacheDir))
+	if _, err := client.storeDiskCache(source, []byte("jwt")); err != nil {
+		t.Fatalf("store disk cache: %v", err)
+	}
+	path, err := client.diskCachePath(source)
+	if err != nil {
+		t.Fatalf("disk cache path: %v", err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read disk cache: %v", err)
+	}
+	if string(body) != "jwt" {
+		t.Fatalf("disk cache body = %q, want %q", body, "jwt")
+	}
+}
+
 func TestLookupRevalidationMarksDiskCacheFresh(t *testing.T) {
 	const source = "https://mds.example.test/revalidation"
 
@@ -87,11 +125,21 @@ func TestLookupAllowsVerifiedStaleCacheOnRateLimit(t *testing.T) {
 	const source = "https://mds.example.test/rate-limit"
 
 	now := time.Date(2026, time.July, 10, 12, 0, 0, 0, time.UTC)
+	var fetches atomic.Int64
 	client := &Client{
-		Source:     source,
-		HTTPClient: &http.Client{Transport: statusTransport(http.StatusTooManyRequests)},
-		Cache:      NewCache(),
-		Now:        func() time.Time { return now },
+		Source:   source,
+		Cache:    NewCache(),
+		CacheDir: t.TempDir(),
+		Now:      func() time.Time { return now },
+		HTTPClient: &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+			fetches.Add(1)
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Body:       http.NoBody,
+				Header:     make(http.Header),
+				Request:    request,
+			}, nil
+		})},
 	}
 
 	aaguid := uuid.New()
@@ -101,15 +149,28 @@ func TestLookupAllowsVerifiedStaleCacheOnRateLimit(t *testing.T) {
 		CachedAt: now.Add(-48 * time.Hour),
 	})
 
-	result, err := client.Lookup(context.Background(), aaguid, LookupOptions{
-		AllowStaleOnFetchError: true,
-	})
+	result, err := client.Lookup(context.Background(), aaguid, LookupOptions{})
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
 
 	if !result.Cached {
-		t.Fatal("lookup did not report the stale verified cache")
+		t.Fatal("lookup did not report the verified cache")
+	}
+
+	if _, err := client.Lookup(context.Background(), aaguid, LookupOptions{Refresh: true}); err != nil {
+		t.Fatalf("second lookup: %v", err)
+	}
+	if got := fetches.Load(); got != 1 {
+		t.Fatalf("fetches = %d, want 1 during minimum request delay", got)
+	}
+
+	now = now.Add(time.Hour)
+	if _, err := client.Lookup(context.Background(), aaguid, LookupOptions{Refresh: true}); err != nil {
+		t.Fatalf("lookup after minimum delay: %v", err)
+	}
+	if got := fetches.Load(); got != 2 {
+		t.Fatalf("fetches = %d, want 2 after minimum request delay", got)
 	}
 }
 
@@ -155,10 +216,7 @@ func TestLookupDoesNotMaskContextErrorWithStaleCache(t *testing.T) {
 			ctx, cancel := test.context()
 			defer cancel()
 
-			_, err := client.Lookup(ctx, uuid.New(), LookupOptions{
-				Refresh:                true,
-				AllowStaleOnFetchError: true,
-			})
+			_, err := client.Lookup(ctx, uuid.New(), LookupOptions{Refresh: true})
 
 			if !errors.Is(err, test.want) {
 				t.Fatalf("Lookup error = %v, want %v", err, test.want)
@@ -179,9 +237,8 @@ func TestLookupSharesCachedEntry(t *testing.T) {
 	}
 
 	client := &Client{
-		Source:          source,
-		Cache:           NewCache(),
-		RefreshInterval: -1,
+		Source: source,
+		Cache:  NewCache(),
 	}
 
 	client.Cache.Set(client.cacheKey(source), &Blob{
@@ -225,9 +282,7 @@ func TestLookupKeepsDiskCacheWhenVerificationFails(t *testing.T) {
 		t.Fatalf("write disk cache: %v", err)
 	}
 
-	_, err = client.Lookup(context.Background(), uuid.New(), LookupOptions{
-		AllowStaleOnFetchError: true,
-	})
+	_, err = client.Lookup(context.Background(), uuid.New(), LookupOptions{})
 	if !errors.Is(err, ErrFetch) {
 		t.Fatalf("lookup error = %v, want %v", err, ErrFetch)
 	}
@@ -273,10 +328,7 @@ func TestLookupKeepsVerifiedMemoryCacheWhenRemoteVerificationFails(t *testing.T)
 	cacheKey := client.cacheKey(source)
 	cache.Set(cacheKey, local)
 
-	result, err := client.Lookup(t.Context(), aaguid, LookupOptions{
-		Refresh:                true,
-		AllowStaleOnFetchError: true,
-	})
+	result, err := client.Lookup(t.Context(), aaguid, LookupOptions{Refresh: true})
 	if err != nil {
 		t.Fatalf("Lookup: %v", err)
 	}
@@ -284,8 +336,11 @@ func TestLookupKeepsVerifiedMemoryCacheWhenRemoteVerificationFails(t *testing.T)
 		t.Fatalf("result = %+v, want verified local entry", result)
 	}
 	cached, found := cache.Get(cacheKey)
-	if !found || cached != local {
-		t.Fatalf("cached blob = %p, %t; want unchanged verified blob %p", cached, found, local)
+	if !found || cached.Number != local.Number || cached.Entries[aaguid] != entry {
+		t.Fatalf("cached blob = %#v, %t; want verified local data", cached, found)
+	}
+	if !cached.CachedAt.After(local.CachedAt) {
+		t.Fatalf("CachedAt = %v, want value after %v", cached.CachedAt, local.CachedAt)
 	}
 }
 
