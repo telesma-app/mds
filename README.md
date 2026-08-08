@@ -1,9 +1,9 @@
-# go-ctap/mds
+# telesma-app/mds
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/telesma-app/mds.svg)](https://pkg.go.dev/github.com/telesma-app/mds)
 [![Go](https://github.com/telesma-app/mds/actions/workflows/go.yml/badge.svg)](https://github.com/telesma-app/mds/actions/workflows/go.yml)
 
-`go-ctap/mds` is a Go client for the FIDO Metadata Service (MDS3).
+`telesma-app/mds` is a Go client for the FIDO Metadata Service (MDS3).
 
 > [!WARNING]
 > This module is under active development. Its public API may change during `v0.x`.
