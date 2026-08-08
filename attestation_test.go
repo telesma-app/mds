@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-ctap/mds/model"
+	"github.com/telesma-app/mds/model"
 	"github.com/google/uuid"
 )
 

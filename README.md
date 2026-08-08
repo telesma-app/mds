@@ -1,7 +1,7 @@
 # go-ctap/mds
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/go-ctap/mds.svg)](https://pkg.go.dev/github.com/go-ctap/mds)
-[![Go](https://github.com/go-ctap/mds/actions/workflows/go.yml/badge.svg)](https://github.com/go-ctap/mds/actions/workflows/go.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/telesma-app/mds.svg)](https://pkg.go.dev/github.com/telesma-app/mds)
+[![Go](https://github.com/telesma-app/mds/actions/workflows/go.yml/badge.svg)](https://github.com/telesma-app/mds/actions/workflows/go.yml)
 
 `go-ctap/mds` is a Go client for the FIDO Metadata Service (MDS3).
 
@@ -21,7 +21,7 @@
 ## Installation
 
 ```sh
-go get github.com/go-ctap/mds@latest
+go get github.com/telesma-app/mds@latest
 ```
 
 See [`go.mod`](go.mod) for the required Go version.
@@ -76,7 +76,7 @@ certificate chain with the matching metadata statement. It reports trust facts
 and authenticator status issues.
 
 Attestation parsing and format-level signature verification belong to
-[`github.com/go-ctap/ctap/attestation`](https://pkg.go.dev/github.com/go-ctap/ctap/attestation).
+[`github.com/telesma-app/ctap/attestation`](https://pkg.go.dev/github.com/telesma-app/ctap/attestation).
 The relying party remains responsible for its acceptance policy.
 
 ## Testing

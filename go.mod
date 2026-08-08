@@ -1,11 +1,11 @@
-module github.com/go-ctap/mds
+module github.com/telesma-app/mds
 
 go 1.26.3
 
 require (
-	github.com/go-ctap/ctap v0.37.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
+	github.com/telesma-app/ctap v0.44.0
 )
 
 require (

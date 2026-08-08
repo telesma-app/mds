@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	appmds "github.com/go-ctap/mds/model"
+	appmds "github.com/telesma-app/mds/model"
 	"github.com/golang-jwt/jwt/v5"
 )
 

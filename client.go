@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-ctap/mds/internal/mdsverify"
-	appmds "github.com/go-ctap/mds/model"
+	"github.com/telesma-app/mds/internal/mdsverify"
+	appmds "github.com/telesma-app/mds/model"
 	"github.com/google/uuid"
 )
 

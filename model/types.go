@@ -3,7 +3,7 @@ package model
 import (
 	"time"
 
-	"github.com/go-ctap/ctap/protocol"
+	"github.com/telesma-app/ctap/protocol"
 	"github.com/google/uuid"
 )
 
