@@ -5,22 +5,23 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/telesma-app/mds/internal/mdsverify"
 	appmds "github.com/telesma-app/mds/model"
-	"github.com/google/uuid"
 )
 
 const (
@@ -73,7 +74,7 @@ type Client struct {
 // LookupOptions configures one MDS lookup.
 type LookupOptions struct {
 	// Refresh forces a conditional network refresh attempt, but still loads the
-	// local copy first so localCopySerial and anti-rollback checks keep working.
+	// local copy first so ETag revalidation and anti-rollback checks keep working.
 	Refresh bool
 }
 
@@ -94,7 +95,7 @@ type Blob struct {
 
 // Lookup returns verified MDS data for one AAGUID.
 func (c *Client) Lookup(ctx context.Context, aaguid uuid.UUID, opts LookupOptions) (appmds.LookupResult, error) {
-	if aaguid == uuid.Nil {
+	if aaguid == uuid.Nil() {
 		return appmds.LookupResult{}, ErrInvalidAAGUID
 	}
 
@@ -123,18 +124,18 @@ func (c *Client) Lookup(ctx context.Context, aaguid uuid.UUID, opts LookupOption
 
 func (c *Client) blob(ctx context.Context, source string, opts LookupOptions) (*Blob, bool, error) {
 	cacheKey := c.cacheKey(source)
-	local := c.loadLocal(ctx, source, cacheKey)
+	local, _ := c.loadLocal(ctx, source, cacheKey)
 	if local != nil && !c.shouldRefresh(local, opts) {
 		return local, true, nil
 	}
 
 	refreshed, cached, err := c.cache().Refresh(ctx, cacheKey, func() (*Blob, bool, error) {
-		current := c.loadLocal(ctx, source, cacheKey)
+		current, serial := c.loadLocal(ctx, source, cacheKey)
 		if current != nil && !opts.Refresh && !c.shouldRefresh(current, opts) {
 			return current, true, nil
 		}
 
-		return c.refreshBlob(ctx, source, cacheKey, current)
+		return c.refreshBlob(ctx, source, cacheKey, current, serial)
 	})
 	if err != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
@@ -151,15 +152,15 @@ func (c *Client) blob(ctx context.Context, source string, opts LookupOptions) (*
 	return refreshed, cached, err
 }
 
-func (c *Client) refreshBlob(ctx context.Context, source, cacheKey string, local *Blob) (*Blob, bool, error) {
-	remote, raw, notModified, err := c.fetchAndVerify(ctx, source, local)
+func (c *Client) refreshBlob(ctx context.Context, source, cacheKey string, local *Blob, serial uint64) (*Blob, bool, error) {
+	remote, raw, notModified, err := c.fetchAndVerify(ctx, source, serial)
 	if err != nil {
 		return nil, false, err
 	}
 
 	if notModified {
 		if local == nil {
-			return nil, false, fmt.Errorf("%w: server returned 304 without a local blob", ErrFetch)
+			return nil, false, fmt.Errorf("%w: server returned 304 without a verified local blob", ErrVerify)
 		}
 
 		return c.markLocalFresh(source, cacheKey, local), true, nil
@@ -198,19 +199,19 @@ func (c *Client) markLocalFresh(source, cacheKey string, local *Blob) *Blob {
 	return &refreshed
 }
 
-func (c *Client) loadLocal(ctx context.Context, source, cacheKey string) *Blob {
+func (c *Client) loadLocal(ctx context.Context, source, cacheKey string) (*Blob, uint64) {
 	cache := c.cache()
 	if blob, ok := cache.Get(cacheKey); ok {
-		return blob
+		return blob, blob.Number
 	}
 
-	blob, ok := c.loadDiskCache(ctx, source)
-	if !ok {
-		return nil
+	blob, serial := c.loadDiskCache(ctx, source)
+	if blob == nil {
+		return nil, serial
 	}
 	cache.Set(cacheKey, blob)
 
-	return blob
+	return blob, blob.Number
 }
 
 func (c *Client) shouldRefresh(local *Blob, opts LookupOptions) bool {
@@ -228,15 +229,13 @@ func (c *Client) shouldRefresh(local *Blob, opts LookupOptions) bool {
 	return !c.now().Before(local.CachedAt.Add(DefaultRefreshInterval))
 }
 
-func (c *Client) fetchAndVerify(ctx context.Context, source string, local *Blob) (*Blob, []byte, bool, error) {
-	fetchURL, err := metadataFetchURL(source, local)
+func (c *Client) fetchAndVerify(ctx context.Context, source string, serial uint64) (*Blob, []byte, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("%w: %w", ErrFetch, err)
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
-	if err != nil {
-		return nil, nil, false, fmt.Errorf("%w: %w", ErrFetch, err)
+	if serial != 0 {
+		req.Header.Set("If-None-Match", strconv.FormatUint(serial, 10))
 	}
 
 	resp, err := c.httpClient().Do(req)
@@ -262,30 +261,31 @@ func (c *Client) fetchAndVerify(ctx context.Context, source string, local *Blob)
 	if err != nil {
 		return nil, nil, false, err
 	}
+
 	return blob, body, false, nil
 }
 
-func (c *Client) loadDiskCache(ctx context.Context, source string) (*Blob, bool) {
+func (c *Client) loadDiskCache(ctx context.Context, source string) (*Blob, uint64) {
 	path, err := c.diskCachePath(source)
 	if err != nil {
-		return nil, false
+		return nil, 0
 	}
 
 	body, err := os.ReadFile(path)
 	if err != nil {
-		return nil, false
+		return nil, 0
 	}
 
 	blob, err := c.parseAndVerify(ctx, body)
 	if err != nil {
-		return nil, false
+		return nil, unverifiedBlobSerial(body)
 	}
 
 	if info, err := os.Stat(path); err == nil {
 		blob.CachedAt = info.ModTime()
 	}
 
-	return blob, true
+	return blob, blob.Number
 }
 
 func (c *Client) storeDiskCache(source string, body []byte) (time.Time, error) {
@@ -367,7 +367,7 @@ func blobFromVerified(verified *mdsverify.Blob) *Blob {
 	entries := make(map[uuid.UUID]*appmds.PayloadEntry, len(verified.Entries))
 	for index := range verified.Entries {
 		entry := &verified.Entries[index]
-		if entry.AAGUID != uuid.Nil {
+		if entry.AAGUID != uuid.Nil() {
 			entries[entry.AAGUID] = entry
 		}
 	}
@@ -388,21 +388,25 @@ func (c *Client) verifier() *mdsverify.Verifier {
 	}
 }
 
-func metadataFetchURL(source string, local *Blob) (string, error) {
-	if local == nil {
-		return source, nil
+func unverifiedBlobSerial(raw []byte) uint64 {
+	parts := bytes.SplitN(raw, []byte("."), 3)
+	if len(parts) != 3 {
+		return 0
 	}
 
-	u, err := url.Parse(source)
+	payload, err := base64.RawURLEncoding.DecodeString(string(parts[1]))
 	if err != nil {
-		return "", err
+		return 0
 	}
 
-	values := u.Query()
-	values.Set("localCopySerial", strconv.FormatUint(local.Number, 10))
-	u.RawQuery = values.Encode()
+	var claims struct {
+		Number uint64 `json:"no"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return 0
+	}
 
-	return u.String(), nil
+	return claims.Number
 }
 
 func (c *Client) cacheKey(source string) string {

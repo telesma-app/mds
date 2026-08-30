@@ -65,9 +65,9 @@ result, err := client.Lookup(ctx, aaguid, mds.LookupOptions{
 })
 ```
 
-The request includes `localCopySerial` when a local BLOB exists. If refresh
-fails, the client returns the last verified local BLOB and delays the next
-automatic attempt.
+The client sends the cached BLOB serial in `If-None-Match` during revalidation. A `304 Not Modified` response is
+accepted only when the local BLOB is still verified. If refresh fails, the client returns the last verified local BLOB
+and delays the next automatic attempt.
 
 ## Attestation checks
 

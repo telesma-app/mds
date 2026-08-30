@@ -11,8 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"uuid"
+
 	"github.com/telesma-app/mds/model"
-	"github.com/google/uuid"
 )
 
 func TestAssessAttestationTrustsChainAnchoredByMetadata(t *testing.T) {

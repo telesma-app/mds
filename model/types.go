@@ -2,9 +2,9 @@ package model
 
 import (
 	"time"
+	"uuid"
 
 	"github.com/telesma-app/ctap/protocol"
-	"github.com/google/uuid"
 )
 
 // LookupResult is the public result of a verified FIDO Metadata Service AAGUID lookup.
@@ -23,7 +23,7 @@ type PayloadEntry struct {
 	AAID                                 *string                 `json:"aaid,omitempty"`
 	AAGUID                               uuid.UUID               `json:"aaguid,omitempty"`
 	AttestationCertificateKeyIdentifiers []string                `json:"attestationCertificateKeyIdentifiers,omitempty"`
-	MetadataStatement                    MetadataStatement       `json:"metadataStatement,omitempty"`
+	MetadataStatement                    MetadataStatement       `json:"metadataStatement"`
 	BiometricStatusReports               []BiometricStatusReport `json:"biometricStatusReports,omitempty"`
 	StatusReports                        []StatusReport          `json:"statusReports,omitempty"`
 	TimeOfLastStatusChange               string                  `json:"timeOfLastStatusChange,omitempty"`
@@ -120,7 +120,7 @@ type MetadataStatement struct {
 	ProviderLogoDark                     *string                               `json:"providerLogoDark,omitempty"`
 	ExtensionDescriptor                  []ExtensionDescriptor                 `json:"extensionDescriptor,omitempty"`
 	MultiDeviceCredentialSupport         *string                               `json:"multiDeviceCredentialSupport"`
-	AuthenticatorGetInfo                 protocol.AuthenticatorGetInfoResponse `json:"authenticatorGetInfo,omitempty"`
+	AuthenticatorGetInfo                 protocol.AuthenticatorGetInfoResponse `json:"authenticatorGetInfo"`
 	CxConfigURL                          *string                               `json:"cxConfigURL"`
 }
 

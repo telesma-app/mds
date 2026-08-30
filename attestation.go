@@ -5,9 +5,9 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"time"
+	"uuid"
 
 	"github.com/telesma-app/mds/model"
-	"github.com/google/uuid"
 )
 
 // AttestationType describes the trust material exposed by a format-level
@@ -46,7 +46,7 @@ func AssessAttestation(
 
 		return assessment
 	}
-	if metadata.AAGUID != evidence.AAGUID || metadata.Entry.AAGUID != uuid.Nil && metadata.Entry.AAGUID != evidence.AAGUID {
+	if metadata.AAGUID != evidence.AAGUID || metadata.Entry.AAGUID != uuid.Nil() && metadata.Entry.AAGUID != evidence.AAGUID {
 		assessment.Status = model.AttestationTrustStatusUntrusted
 		assessment.Issues = append(assessment.Issues, model.AttestationTrustIssueMetadataAAGUIDMismatch)
 

@@ -3,6 +3,7 @@ package mds
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"net/http"
@@ -14,8 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"uuid"
+
 	appmds "github.com/telesma-app/mds/model"
-	"github.com/google/uuid"
 )
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)
@@ -78,13 +80,23 @@ func TestLookupRevalidationMarksDiskCacheFresh(t *testing.T) {
 
 	now := time.Date(2026, time.July, 10, 12, 0, 0, 0, time.UTC)
 	old := now.Add(-48 * time.Hour)
+	var requestedETag string
 
 	client := &Client{
-		Source:     source,
-		HTTPClient: &http.Client{Transport: statusTransport(http.StatusNotModified)},
-		Cache:      NewCache(),
-		CacheDir:   t.TempDir(),
-		Now:        func() time.Time { return now },
+		Source:   source,
+		Cache:    NewCache(),
+		CacheDir: t.TempDir(),
+		Now:      func() time.Time { return now },
+		HTTPClient: &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+			requestedETag = request.Header.Get("If-None-Match")
+
+			return &http.Response{
+				StatusCode: http.StatusNotModified,
+				Body:       http.NoBody,
+				Header:     make(http.Header),
+				Request:    request,
+			}, nil
+		})},
 	}
 
 	aaguid := uuid.New()
@@ -118,6 +130,86 @@ func TestLookupRevalidationMarksDiskCacheFresh(t *testing.T) {
 
 	if got := info.ModTime(); !got.Equal(now) {
 		t.Fatalf("disk cache modtime = %v, want %v", got, now)
+	}
+	if requestedETag != "1" {
+		t.Fatalf("If-None-Match = %q, want 1", requestedETag)
+	}
+}
+
+func TestLookupUsesDiskSerialAsETag(t *testing.T) {
+	const source = "https://mds.example.test/unverified-validator"
+
+	client := &Client{
+		Source:   source,
+		Cache:    NewCache(),
+		CacheDir: t.TempDir(),
+	}
+	path, err := client.diskCachePath(source)
+	if err != nil {
+		t.Fatalf("disk cache path: %v", err)
+	}
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"no":276,"entries":[]}`))
+	if err := os.WriteFile(path, []byte(header+"."+payload+".invalid"), 0o600); err != nil {
+		t.Fatalf("write invalid disk cache: %v", err)
+	}
+
+	var requestedETag string
+	client.HTTPClient = &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		requestedETag = request.Header.Get("If-None-Match")
+
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Body:       http.NoBody,
+			Header:     make(http.Header),
+			Request:    request,
+		}, nil
+	})}
+
+	_, err = client.Lookup(t.Context(), uuid.New(), LookupOptions{})
+	if !errors.Is(err, ErrFetch) {
+		t.Fatalf("Lookup error = %v, want %v", err, ErrFetch)
+	}
+	if requestedETag != "276" {
+		t.Fatalf("If-None-Match = %q, want 276", requestedETag)
+	}
+}
+
+func TestLookupRejectsNotModifiedForInvalidDiskCache(t *testing.T) {
+	const source = "https://mds.example.test/invalid-cache-304"
+
+	client := &Client{
+		Source:   source,
+		Cache:    NewCache(),
+		CacheDir: t.TempDir(),
+	}
+	path, err := client.diskCachePath(source)
+	if err != nil {
+		t.Fatalf("disk cache path: %v", err)
+	}
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"no":276,"entries":[]}`))
+	if err := os.WriteFile(path, []byte(header+"."+payload+".invalid"), 0o600); err != nil {
+		t.Fatalf("write invalid disk cache: %v", err)
+	}
+	var requestedETag string
+	client.HTTPClient = &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		requestedETag = request.Header.Get("If-None-Match")
+
+		return &http.Response{
+			StatusCode: http.StatusNotModified,
+			Body:       http.NoBody,
+			Header:     make(http.Header),
+			Request:    request,
+		}, nil
+	})}
+
+	_, err = client.Lookup(t.Context(), uuid.New(), LookupOptions{})
+	if !errors.Is(err, ErrVerify) {
+		t.Fatalf("Lookup error = %v, want %v", err, ErrVerify)
+	}
+	if requestedETag != "276" {
+		t.Fatalf("If-None-Match = %q, want 276", requestedETag)
 	}
 }
 
@@ -450,7 +542,7 @@ func TestBlobFetchRejectsRedirectAndOversizeResponse(t *testing.T) {
 				})},
 			}
 
-			_, _, _, err := client.fetchAndVerify(t.Context(), client.Source, nil)
+			_, _, _, err := client.fetchAndVerify(t.Context(), client.Source, 0)
 			if test.wantStatus != 0 {
 				var statusErr *HTTPStatusError
 				if !errors.As(err, &statusErr) || statusErr.StatusCode != test.wantStatus {
