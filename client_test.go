@@ -14,7 +14,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
 	"uuid"
 
 	appmds "github.com/telesma-app/mds/model"

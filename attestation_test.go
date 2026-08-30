@@ -10,7 +10,6 @@ import (
 	"math/big"
 	"testing"
 	"time"
-
 	"uuid"
 
 	"github.com/telesma-app/mds/model"

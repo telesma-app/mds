@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	appmds "github.com/telesma-app/mds/model"
 	"github.com/golang-jwt/jwt/v5"
+	appmds "github.com/telesma-app/mds/model"
 )
 
 const (
