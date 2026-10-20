@@ -44,40 +44,22 @@ if result.Found {
 
 ## Caching
 
-The client always checks its verified cache before making a network request.
-It uses an in-memory cache and stores the signed BLOB in the platform user
-cache directory.
+The client shares an in-memory cache and stores verified, signed BLOBs in the
+platform user cache directory; use `mds.WithCacheDir` to choose another location.
+Cached metadata refreshes automatically after a day. `LookupOptions{Refresh: true}`
+requests an earlier refresh, subject to a one-hour minimum interval.
 
-Use `WithCacheDir` when the application owns the cache location:
-
-```go
-client := mds.NewClient(
-    mds.WithCacheDir("/var/cache/my-service/fido-mds"),
-)
-```
-
-Automatic refresh runs at most once per day. An explicit refresh is limited to
-one request per hour for each cache key:
-
-```go
-result, err := client.Lookup(ctx, aaguid, mds.LookupOptions{
-    Refresh: true,
-})
-```
-
-The client sends the cached BLOB serial in `If-None-Match` during revalidation. A `304 Not Modified` response is
-accepted only when the local BLOB is still verified. If refresh fails, the client returns the last verified local BLOB
-and delays the next automatic attempt.
+`Cached` identifies a local result, and `CheckedAt` records its last successful
+network check. If an update fails, verified cached data remains available with
+`RefreshErr`; failures without usable cache and canceled refreshes return an error.
 
 ## Attestation checks
 
-`AssessAttestation` compares an already verified authenticator attestation
-certificate chain with the matching metadata statement. It reports trust facts
-and authenticator status issues.
-
-Attestation parsing and format-level signature verification belong to
-[`github.com/telesma-app/ctap/attestation`](https://pkg.go.dev/github.com/telesma-app/ctap/attestation).
-The relying party remains responsible for its acceptance policy.
+`AssessAttestation` compares an already verified attestation with metadata roots
+and status reports. Parse and verify the attestation with
+[`ctap/attestation`](https://pkg.go.dev/github.com/telesma-app/ctap/attestation)
+first; the relying party owns acceptance policy. An AAGUID lookup alone does not
+authenticate the connected device.
 
 ## Testing
 

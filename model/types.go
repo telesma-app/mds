@@ -8,6 +8,7 @@ import (
 )
 
 // LookupResult is the public result of a verified FIDO Metadata Service AAGUID lookup.
+// Signed metadata describes an authenticator model; it does not authenticate a device.
 type LookupResult struct {
 	AAGUID     uuid.UUID     `json:"aaguid"`
 	Found      bool          `json:"found"`
@@ -15,7 +16,10 @@ type LookupResult struct {
 	BlobNumber uint64        `json:"blobNumber"`
 	Source     string        `json:"source"`
 	Cached     bool          `json:"cached"`
-	CachedAt   time.Time     `json:"cachedAt"`
+	// CheckedAt is the last successful network retrieval or revalidation.
+	CheckedAt time.Time `json:"checkedAt"`
+	// RefreshErr is the latest refresh failure when verified cached data is returned.
+	RefreshErr error `json:"-"`
 }
 
 // PayloadEntry contains the MDS payload entry for one authenticator model.

@@ -58,7 +58,7 @@ func TestWithCacheDirControlsWrites(t *testing.T) {
 
 	cacheDir := t.TempDir()
 	client := NewClient(WithCacheDir(cacheDir))
-	if _, err := client.storeDiskCache(source, []byte("jwt")); err != nil {
+	if err := client.storeDiskCache(source, []byte("jwt"), time.Now()); err != nil {
 		t.Fatalf("store disk cache: %v", err)
 	}
 	path, err := client.diskCachePath(source)
@@ -100,9 +100,9 @@ func TestLookupRevalidationMarksDiskCacheFresh(t *testing.T) {
 
 	aaguid := uuid.New()
 	client.Cache.Set(client.cacheKey(source), &Blob{
-		Number:   1,
-		Entries:  map[uuid.UUID]*appmds.PayloadEntry{},
-		CachedAt: old,
+		Number:    1,
+		Entries:   map[uuid.UUID]*appmds.PayloadEntry{},
+		CheckedAt: old,
 	})
 
 	path, err := client.diskCachePath(source)
@@ -235,9 +235,9 @@ func TestLookupAllowsVerifiedStaleCacheOnRateLimit(t *testing.T) {
 
 	aaguid := uuid.New()
 	client.Cache.Set(client.cacheKey(source), &Blob{
-		Number:   1,
-		Entries:  map[uuid.UUID]*appmds.PayloadEntry{},
-		CachedAt: now.Add(-48 * time.Hour),
+		Number:    1,
+		Entries:   map[uuid.UUID]*appmds.PayloadEntry{},
+		CheckedAt: now.Add(-48 * time.Hour),
 	})
 
 	result, err := client.Lookup(context.Background(), aaguid, LookupOptions{})
@@ -300,9 +300,9 @@ func TestLookupDoesNotMaskContextErrorWithStaleCache(t *testing.T) {
 				Cache:  cache,
 			}
 			cache.Set(client.cacheKey(source), &Blob{
-				Number:   1,
-				Entries:  map[uuid.UUID]*appmds.PayloadEntry{},
-				CachedAt: time.Now().Add(-48 * time.Hour),
+				Number:    1,
+				Entries:   map[uuid.UUID]*appmds.PayloadEntry{},
+				CheckedAt: time.Now().Add(-48 * time.Hour),
 			})
 			ctx, cancel := test.context()
 			defer cancel()
@@ -333,9 +333,9 @@ func TestLookupSharesCachedEntry(t *testing.T) {
 	}
 
 	client.Cache.Set(client.cacheKey(source), &Blob{
-		Number:   1,
-		Entries:  map[uuid.UUID]*appmds.PayloadEntry{aaguid: entry},
-		CachedAt: time.Now(),
+		Number:    1,
+		Entries:   map[uuid.UUID]*appmds.PayloadEntry{aaguid: entry},
+		CheckedAt: time.Now(),
 	})
 
 	result, err := client.Lookup(context.Background(), aaguid, LookupOptions{})
@@ -399,9 +399,9 @@ func TestLookupKeepsVerifiedMemoryCacheWhenRemoteVerificationFails(t *testing.T)
 		},
 	}
 	local := &Blob{
-		Number:   7,
-		Entries:  map[uuid.UUID]*appmds.PayloadEntry{aaguid: entry},
-		CachedAt: time.Now().Add(-48 * time.Hour),
+		Number:    7,
+		Entries:   map[uuid.UUID]*appmds.PayloadEntry{aaguid: entry},
+		CheckedAt: time.Now().Add(-48 * time.Hour),
 	}
 	cache := NewCache()
 	client := &Client{
@@ -430,8 +430,11 @@ func TestLookupKeepsVerifiedMemoryCacheWhenRemoteVerificationFails(t *testing.T)
 	if !found || cached.Number != local.Number || cached.Entries[aaguid] != entry {
 		t.Fatalf("cached blob = %#v, %t; want verified local data", cached, found)
 	}
-	if !cached.CachedAt.After(local.CachedAt) {
-		t.Fatalf("CachedAt = %v, want value after %v", cached.CachedAt, local.CachedAt)
+	if !cached.CheckedAt.Equal(local.CheckedAt) {
+		t.Fatalf("CheckedAt = %v, want %v", cached.CheckedAt, local.CheckedAt)
+	}
+	if !errors.Is(result.RefreshErr, ErrVerify) {
+		t.Fatalf("refresh = %+v, want verification failure", result.RefreshErr)
 	}
 }
 

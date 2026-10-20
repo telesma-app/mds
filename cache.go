@@ -5,10 +5,11 @@ import (
 	"sync"
 )
 
-// Cache stores verified MDS blobs and coordinates refreshes by cache key.
+// Cache stores immutable verified blobs. Refresh runs one callback per key;
+// concurrent callers share its result unless their context is canceled.
 type Cache interface {
-	Get(source string) (*Blob, bool)
-	Set(source string, blob *Blob)
+	Get(key string) (*Blob, bool)
+	Set(key string, blob *Blob)
 	Refresh(context.Context, string, func() (*Blob, bool, error)) (*Blob, bool, error)
 }
 
@@ -43,10 +44,6 @@ func (c *simpleCache) Get(source string) (*Blob, bool) {
 }
 
 func (c *simpleCache) Set(source string, blob *Blob) {
-	if blob == nil {
-		return
-	}
-
 	c.mu.Lock()
 	c.blobs[source] = blob
 	c.mu.Unlock()

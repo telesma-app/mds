@@ -73,8 +73,7 @@ type Client struct {
 
 // LookupOptions configures one MDS lookup.
 type LookupOptions struct {
-	// Refresh forces a conditional network refresh attempt, but still loads the
-	// local copy first so ETag revalidation and anti-rollback checks keep working.
+	// Refresh requests a network refresh, subject to the minimum request delay.
 	Refresh bool
 }
 
@@ -90,10 +89,15 @@ type Blob struct {
 
 	Entries map[uuid.UUID]*appmds.PayloadEntry
 
-	CachedAt time.Time
+	// CheckedAt is the last successful network retrieval or revalidation.
+	CheckedAt time.Time
+
+	attemptedAt time.Time
+	refreshErr  error
 }
 
-// Lookup returns verified MDS data for one AAGUID.
+// Lookup returns verified metadata, using cached data with RefreshErr on failure.
+// Canceled refreshes and failures without a verified cache return an error.
 func (c *Client) Lookup(ctx context.Context, aaguid uuid.UUID, opts LookupOptions) (appmds.LookupResult, error) {
 	if aaguid == uuid.Nil() {
 		return appmds.LookupResult{}, ErrInvalidAAGUID
@@ -112,7 +116,8 @@ func (c *Client) Lookup(ctx context.Context, aaguid uuid.UUID, opts LookupOption
 		BlobNumber: blob.Number,
 		Source:     source,
 		Cached:     cached,
-		CachedAt:   blob.CachedAt,
+		CheckedAt:  blob.CheckedAt,
+		RefreshErr: blob.refreshErr,
 	}
 
 	if found {
@@ -129,71 +134,60 @@ func (c *Client) blob(ctx context.Context, source string, opts LookupOptions) (*
 		return local, true, nil
 	}
 
-	refreshed, cached, err := c.cache().Refresh(ctx, cacheKey, func() (*Blob, bool, error) {
+	return c.cache().Refresh(ctx, cacheKey, func() (*Blob, bool, error) {
 		current, serial := c.loadLocal(ctx, source, cacheKey)
-		if current != nil && !opts.Refresh && !c.shouldRefresh(current, opts) {
+		if current != nil && !c.shouldRefresh(current, opts) {
 			return current, true, nil
 		}
 
 		return c.refreshBlob(ctx, source, cacheKey, current, serial)
 	})
+}
+
+func (c *Client) refreshBlob(ctx context.Context, source, cacheKey string, local *Blob, serial uint64) (*Blob, bool, error) {
+	attemptedAt := c.now()
+	remote, raw, notModified, err := c.fetchAndVerify(ctx, source, serial)
+	if err == nil && notModified && local == nil {
+		err = fmt.Errorf("%w: server returned 304 without a verified local blob", ErrVerify)
+	}
+	if err == nil && !notModified && local != nil && remote.Number < local.Number {
+		err = fmt.Errorf("%w: BLOB number %d is older than cached number %d", ErrVerify, remote.Number, local.Number)
+	}
 	if err != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
 			return nil, false, contextErr
 		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if local == nil {
 			return nil, false, err
 		}
-		if local != nil {
-			return c.markLocalFresh(source, cacheKey, local), true, nil
-		}
+		retained := *local
+		retained.attemptedAt = attemptedAt
+		retained.refreshErr = err
+		c.cache().Set(cacheKey, &retained)
+		return &retained, true, nil
 	}
 
-	return refreshed, cached, err
-}
-
-func (c *Client) refreshBlob(ctx context.Context, source, cacheKey string, local *Blob, serial uint64) (*Blob, bool, error) {
-	remote, raw, notModified, err := c.fetchAndVerify(ctx, source, serial)
-	if err != nil {
-		return nil, false, err
+	if notModified || local != nil && remote.Number == local.Number {
+		return c.markLocalChecked(source, cacheKey, local, attemptedAt), true, nil
 	}
 
-	if notModified {
-		if local == nil {
-			return nil, false, fmt.Errorf("%w: server returned 304 without a verified local blob", ErrVerify)
-		}
-
-		return c.markLocalFresh(source, cacheKey, local), true, nil
-	}
-
-	if local != nil && remote.Number == local.Number {
-		return c.markLocalFresh(source, cacheKey, local), true, nil
-	}
-
-	if local != nil && remote.Number < local.Number {
-		return c.markLocalFresh(source, cacheKey, local), true, nil
-	}
-
-	cachedAt, err := c.storeDiskCache(source, raw)
-	if err != nil {
-		cachedAt = c.now()
-	} else if cachedAt.IsZero() {
-		cachedAt = c.now()
-	}
-	remote.CachedAt = cachedAt
-
+	remote.CheckedAt = c.now()
+	remote.attemptedAt = attemptedAt
+	_ = c.storeDiskCache(source, raw, remote.CheckedAt)
 	c.cache().Set(cacheKey, remote)
 	return remote, false, nil
 }
 
-func (c *Client) markLocalFresh(source, cacheKey string, local *Blob) *Blob {
+func (c *Client) markLocalChecked(source, cacheKey string, local *Blob, attemptedAt time.Time) *Blob {
 	refreshed := *local
-	refreshed.CachedAt = c.now()
+	refreshed.CheckedAt = c.now()
+	refreshed.attemptedAt = attemptedAt
+	refreshed.refreshErr = nil
 	c.cache().Set(cacheKey, &refreshed)
 
 	path, err := c.diskCachePath(source)
 	if err == nil {
-		_ = os.Chtimes(path, refreshed.CachedAt, refreshed.CachedAt)
+		_ = os.Chtimes(path, refreshed.CheckedAt, refreshed.CheckedAt)
 	}
 
 	return &refreshed
@@ -215,18 +209,16 @@ func (c *Client) loadLocal(ctx context.Context, source, cacheKey string) (*Blob,
 }
 
 func (c *Client) shouldRefresh(local *Blob, opts LookupOptions) bool {
+	lastRequest := local.CheckedAt
+	if local.attemptedAt.After(lastRequest) {
+		lastRequest = local.attemptedAt
+	}
+	interval := DefaultRefreshInterval
 	if opts.Refresh {
-		if local.CachedAt.IsZero() {
-			return true
-		}
-		return !c.now().Before(local.CachedAt.Add(minRequestDelay))
+		interval = minRequestDelay
 	}
 
-	if local.CachedAt.IsZero() {
-		return true
-	}
-
-	return !c.now().Before(local.CachedAt.Add(DefaultRefreshInterval))
+	return lastRequest.IsZero() || !c.now().Before(lastRequest.Add(interval))
 }
 
 func (c *Client) fetchAndVerify(ctx context.Context, source string, serial uint64) (*Blob, []byte, bool, error) {
@@ -282,26 +274,26 @@ func (c *Client) loadDiskCache(ctx context.Context, source string) (*Blob, uint6
 	}
 
 	if info, err := os.Stat(path); err == nil {
-		blob.CachedAt = info.ModTime()
+		blob.CheckedAt = info.ModTime()
 	}
 
 	return blob, blob.Number
 }
 
-func (c *Client) storeDiskCache(source string, body []byte) (time.Time, error) {
+func (c *Client) storeDiskCache(source string, body []byte, checkedAt time.Time) error {
 	path, err := c.diskCachePath(source)
 	if err != nil {
-		return time.Time{}, err
+		return err
 	}
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return time.Time{}, err
+		return err
 	}
 
 	temp, err := os.CreateTemp(dir, ".mds-*.tmp")
 	if err != nil {
-		return time.Time{}, err
+		return err
 	}
 	tempPath := temp.Name()
 	removeTemp := true
@@ -313,35 +305,33 @@ func (c *Client) storeDiskCache(source string, body []byte) (time.Time, error) {
 
 	if err := os.Chmod(tempPath, 0o600); err != nil {
 		_ = temp.Close()
-		return time.Time{}, err
+		return err
 	}
 
 	if _, err := temp.Write(body); err != nil {
 		_ = temp.Close()
-		return time.Time{}, err
+		return err
 	}
 
 	if err := temp.Sync(); err != nil {
 		_ = temp.Close()
-		return time.Time{}, err
+		return err
 	}
 
 	if err := temp.Close(); err != nil {
-		return time.Time{}, err
+		return err
 	}
 
+	if err := os.Chtimes(tempPath, checkedAt, checkedAt); err != nil {
+		return err
+	}
 	if err := os.Rename(tempPath, path); err != nil {
-		return time.Time{}, err
+		return err
 	}
 	removeTemp = false
 	syncDirBestEffort(dir)
 
-	info, err := os.Stat(path)
-	if err != nil {
-		return time.Time{}, err
-	}
-
-	return info.ModTime(), nil
+	return nil
 }
 
 func (c *Client) diskCachePath(source string) (string, error) {
