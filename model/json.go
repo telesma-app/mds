@@ -18,6 +18,7 @@ func (statement *MetadataStatement) UnmarshalJSON(data []byte) error {
 	type metadataStatement MetadataStatement
 
 	var decoded metadataStatement
+
 	wire := struct {
 		*metadataStatement
 		AuthenticatorGetInfo json.RawMessage `json:"authenticatorGetInfo"`
@@ -34,6 +35,7 @@ func (statement *MetadataStatement) UnmarshalJSON(data []byte) error {
 		if err != nil {
 			return err
 		}
+
 		decoded.AuthenticatorGetInfo = info
 	}
 

@@ -57,11 +57,14 @@ func (e *HTTPStatusError) Unwrap() error {
 
 // Client fetches, caches, and looks up verified FIDO Metadata Service blobs.
 // Signature, x5u/x5c, certificate-chain and CRL validation live in internal/mdsverify.
+// The zero value is ready to use.
 type Client struct {
-	Source       string
-	HTTPClient   *http.Client
-	Cache        Cache
-	CacheDir     string
+	Source     string
+	HTTPClient *http.Client
+	Cache      Cache
+	CacheDir   string
+
+	// TrustAnchors overrides the pinned roots when non-empty. Certificates must be non-nil.
 	TrustAnchors []*x509.Certificate
 
 	// MaxBlobBytes bounds metadata BLOB downloads. Zero means DefaultMaxBlobBytes.
@@ -104,31 +107,29 @@ func (c *Client) Lookup(ctx context.Context, aaguid uuid.UUID, opts LookupOption
 	}
 
 	source := c.source()
+
 	blob, cached, err := c.blob(ctx, source, opts)
 	if err != nil {
 		return appmds.LookupResult{}, err
 	}
 
 	entry, found := blob.Entries[aaguid]
-	result := appmds.LookupResult{
+
+	return appmds.LookupResult{
 		AAGUID:     aaguid,
 		Found:      found,
+		Entry:      entry,
 		BlobNumber: blob.Number,
 		Source:     source,
 		Cached:     cached,
 		CheckedAt:  blob.CheckedAt,
 		RefreshErr: blob.refreshErr,
-	}
-
-	if found {
-		result.Entry = entry
-	}
-
-	return result, nil
+	}, nil
 }
 
 func (c *Client) blob(ctx context.Context, source string, opts LookupOptions) (*Blob, bool, error) {
 	cacheKey := c.cacheKey(source)
+
 	local, _ := c.loadLocal(ctx, source, cacheKey)
 	if local != nil && !c.shouldRefresh(local, opts) {
 		return local, true, nil
@@ -146,24 +147,30 @@ func (c *Client) blob(ctx context.Context, source string, opts LookupOptions) (*
 
 func (c *Client) refreshBlob(ctx context.Context, source, cacheKey string, local *Blob, serial uint64) (*Blob, bool, error) {
 	attemptedAt := c.now()
+
 	remote, raw, notModified, err := c.fetchAndVerify(ctx, source, serial)
 	if err == nil && notModified && local == nil {
 		err = fmt.Errorf("%w: server returned 304 without a verified local blob", ErrVerify)
 	}
+
 	if err == nil && !notModified && local != nil && remote.Number < local.Number {
 		err = fmt.Errorf("%w: BLOB number %d is older than cached number %d", ErrVerify, remote.Number, local.Number)
 	}
+
 	if err != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
 			return nil, false, contextErr
 		}
+
 		if local == nil {
 			return nil, false, err
 		}
+
 		retained := *local
 		retained.attemptedAt = attemptedAt
 		retained.refreshErr = err
 		c.cache().Set(cacheKey, &retained)
+
 		return &retained, true, nil
 	}
 
@@ -175,6 +182,7 @@ func (c *Client) refreshBlob(ctx context.Context, source, cacheKey string, local
 	remote.attemptedAt = attemptedAt
 	_ = c.storeDiskCache(source, raw, remote.CheckedAt)
 	c.cache().Set(cacheKey, remote)
+
 	return remote, false, nil
 }
 
@@ -203,6 +211,7 @@ func (c *Client) loadLocal(ctx context.Context, source, cacheKey string) (*Blob,
 	if blob == nil {
 		return nil, serial
 	}
+
 	cache.Set(cacheKey, blob)
 
 	return blob, blob.Number
@@ -213,6 +222,7 @@ func (c *Client) shouldRefresh(local *Blob, opts LookupOptions) bool {
 	if local.attemptedAt.After(lastRequest) {
 		lastRequest = local.attemptedAt
 	}
+
 	interval := DefaultRefreshInterval
 	if opts.Refresh {
 		interval = minRequestDelay
@@ -226,6 +236,7 @@ func (c *Client) fetchAndVerify(ctx context.Context, source string, serial uint6
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("%w: %w", ErrFetch, err)
 	}
+
 	if serial != 0 {
 		req.Header.Set("If-None-Match", strconv.FormatUint(serial, 10))
 	}
@@ -295,26 +306,18 @@ func (c *Client) storeDiskCache(source string, body []byte, checkedAt time.Time)
 	if err != nil {
 		return err
 	}
+
 	tempPath := temp.Name()
-	removeTemp := true
 	defer func() {
-		if removeTemp {
-			_ = os.Remove(tempPath)
-		}
+		_ = temp.Close()
+		_ = os.Remove(tempPath)
 	}()
 
-	if err := os.Chmod(tempPath, 0o600); err != nil {
-		_ = temp.Close()
-		return err
-	}
-
 	if _, err := temp.Write(body); err != nil {
-		_ = temp.Close()
 		return err
 	}
 
 	if err := temp.Sync(); err != nil {
-		_ = temp.Close()
 		return err
 	}
 
@@ -325,10 +328,11 @@ func (c *Client) storeDiskCache(source string, body []byte, checkedAt time.Time)
 	if err := os.Chtimes(tempPath, checkedAt, checkedAt); err != nil {
 		return err
 	}
+
 	if err := os.Rename(tempPath, path); err != nil {
 		return err
 	}
-	removeTemp = false
+
 	syncDirBestEffort(dir)
 
 	return nil
@@ -341,11 +345,19 @@ func (c *Client) diskCachePath(source string) (string, error) {
 	}
 
 	sum := sha256.Sum256([]byte(source))
+
 	return filepath.Join(dir, hex.EncodeToString(sum[:])+".jwt"), nil
 }
 
 func (c *Client) parseAndVerify(ctx context.Context, raw []byte) (*Blob, error) {
-	verified, err := c.verifier().Verify(ctx, raw)
+	verifier := mdsverify.Verifier{
+		Source:       c.source(),
+		HTTPClient:   c.HTTPClient,
+		TrustAnchors: c.TrustAnchors,
+		Now:          c.Now,
+	}
+
+	verified, err := verifier.Verify(ctx, raw)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrVerify, err)
 	}
@@ -366,15 +378,6 @@ func blobFromVerified(verified *mdsverify.Blob) *Blob {
 		Number:   verified.Number,
 		IssuedAt: verified.IssuedAt,
 		Entries:  entries,
-	}
-}
-
-func (c *Client) verifier() *mdsverify.Verifier {
-	return &mdsverify.Verifier{
-		Source:       c.source(),
-		HTTPClient:   c.httpClient(),
-		TrustAnchors: c.TrustAnchors,
-		Now:          c.Now,
 	}
 }
 
@@ -407,12 +410,10 @@ func (c *Client) cacheKey(source string) string {
 
 	fingerprints := make([]string, 0, len(c.TrustAnchors))
 	for _, anchor := range c.TrustAnchors {
-		if anchor == nil {
-			continue
-		}
 		sum := sha256.Sum256(anchor.Raw)
 		fingerprints = append(fingerprints, hex.EncodeToString(sum[:]))
 	}
+
 	sort.Strings(fingerprints)
 
 	return source + "\x00anchors=" + strings.Join(fingerprints, ",") + "\x00cache-dir=" + cacheDir
@@ -479,6 +480,7 @@ func (c *Client) now() time.Time {
 
 func readLimited(r io.Reader, limit int64) ([]byte, error) {
 	var buf bytes.Buffer
+
 	n, err := buf.ReadFrom(io.LimitReader(r, limit+1))
 	if err != nil {
 		return nil, err
@@ -497,5 +499,6 @@ func syncDirBestEffort(dir string) {
 		return
 	}
 	defer func() { _ = d.Close() }()
+
 	_ = d.Sync()
 }

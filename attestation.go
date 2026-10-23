@@ -39,13 +39,14 @@ func AssessAttestation(
 ) model.AttestationTrustAssessment {
 	assessment := model.AttestationTrustAssessment{
 		Status:        model.AttestationTrustStatusUnavailable,
-		MetadataFound: metadata.Found && metadata.Entry != nil,
+		MetadataFound: metadata.Found,
 	}
 	if !assessment.MetadataFound {
 		assessment.Issues = append(assessment.Issues, model.AttestationTrustIssueMetadataNotFound)
 
 		return assessment
 	}
+
 	if metadata.AAGUID != evidence.AAGUID || metadata.Entry.AAGUID != uuid.Nil() && metadata.Entry.AAGUID != evidence.AAGUID {
 		assessment.Status = model.AttestationTrustStatusUntrusted
 		assessment.Issues = append(assessment.Issues, model.AttestationTrustIssueMetadataAAGUIDMismatch)
@@ -63,9 +64,11 @@ func AssessAttestation(
 
 		return assessment
 	}
+
 	if evidence.Type != AttestationTypeBasic {
 		return assessment
 	}
+
 	if len(evidence.CertificateChain) == 0 {
 		assessment.Status = model.AttestationTrustStatusUntrusted
 		assessment.Issues = append(assessment.Issues, model.AttestationTrustIssueCertificateChainMissing)
@@ -80,10 +83,12 @@ func AssessAttestation(
 
 		return assessment
 	}
+
 	roots, malformedRoot := attestationRoots(metadata.Entry.MetadataStatement.AttestationRootCertificates)
 	if malformedRoot {
 		assessment.Issues = append(assessment.Issues, model.AttestationTrustIssueAttestationRootMalformed)
 	}
+
 	if len(roots) == 0 {
 		assessment.Issues = append(assessment.Issues, model.AttestationTrustIssueAttestationRootsMissing)
 
@@ -94,13 +99,12 @@ func AssessAttestation(
 	for _, root := range roots {
 		rootPool.AddCert(root)
 	}
+
 	intermediatePool := x509.NewCertPool()
 	for _, certificate := range chain[1:] {
 		intermediatePool.AddCert(certificate)
 	}
-	if currentTime.IsZero() {
-		currentTime = time.Now()
-	}
+
 	verifiedChains, err := chain[0].Verify(x509.VerifyOptions{
 		Roots:         rootPool,
 		Intermediates: intermediatePool,
@@ -108,6 +112,7 @@ func AssessAttestation(
 		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
 	})
 	trusted := err == nil
+
 	assessment.CertificateChainTrusted = &trusted
 	if !trusted {
 		assessment.Status = model.AttestationTrustStatusUntrusted
@@ -115,6 +120,7 @@ func AssessAttestation(
 
 		return assessment
 	}
+
 	if len(statusReports) != 0 {
 		currentStatus := statusReports[len(statusReports)-1]
 		switch currentStatus.Status {
@@ -130,6 +136,7 @@ func AssessAttestation(
 
 				return assessment
 			}
+
 			if applies {
 				assessment.Status = model.AttestationTrustStatusUntrusted
 				assessment.Issues = append(assessment.Issues, model.AttestationTrustIssueAttestationKeyCompromise)
@@ -151,6 +158,7 @@ func parseCertificateChain(values [][]byte) ([]*x509.Certificate, bool) {
 		if err != nil {
 			return nil, false
 		}
+
 		chain = append(chain, certificate)
 	}
 
@@ -160,17 +168,20 @@ func parseCertificateChain(values [][]byte) ([]*x509.Certificate, bool) {
 func attestationRoots(values []string) ([]*x509.Certificate, bool) {
 	roots := make([]*x509.Certificate, 0, len(values))
 	malformed := false
+
 	for _, value := range values {
 		raw, err := base64.StdEncoding.DecodeString(value)
 		if err != nil {
 			malformed = true
 			continue
 		}
+
 		certificate, err := x509.ParseCertificate(raw)
 		if err != nil {
 			malformed = true
 			continue
 		}
+
 		roots = append(roots, certificate)
 	}
 
@@ -183,18 +194,23 @@ func attestationKeyCompromiseApplies(
 ) (bool, bool) {
 	values := []*string{report.BatchCertificate, report.Certificate}
 	hasScopedCertificate := false
+
 	for _, value := range values {
 		if value == nil {
 			continue
 		}
+
 		hasScopedCertificate = true
+
 		raw, err := base64.StdEncoding.DecodeString(*value)
 		if err != nil {
 			return false, true
 		}
+
 		if _, err := x509.ParseCertificate(raw); err != nil {
 			return false, true
 		}
+
 		for _, chain := range verifiedChains {
 			for _, certificate := range chain {
 				if bytes.Equal(certificate.Raw, raw) {

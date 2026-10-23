@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"io"
 	"math/big"
 	"net/http"
@@ -62,6 +63,7 @@ func TestVerifierChecksCertificateChainAndCRL(t *testing.T) {
 	}
 
 	verifier.Now = func() time.Time { return now }
+
 	verifier.TrustAnchors = []*x509.Certificate{newTestPKI(t, now).root}
 	if err := verifier.verifyCertificateChain(t.Context(), []*x509.Certificate{pki.leaf}); err == nil || !strings.Contains(err.Error(), "unknown authority") {
 		t.Fatalf("untrusted chain error = %v", err)
@@ -77,6 +79,7 @@ func TestVerifierUsesInjectedClockForJWTClaims(t *testing.T) {
 		"nbf":     now.Add(-time.Hour).Unix(),
 		"exp":     now.Add(time.Hour).Unix(),
 	})
+
 	raw, err := token.SignedString(pki.rootKey)
 	if err != nil {
 		t.Fatalf("sign JWT: %v", err)
@@ -101,6 +104,86 @@ func TestVerifierUsesInjectedClockForJWTClaims(t *testing.T) {
 	}
 }
 
+func TestVerifierIssuedAt(t *testing.T) {
+	now := time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)
+	pki := newTestPKI(t, now)
+	verifier := &Verifier{
+		TrustAnchors: []*x509.Certificate{pki.root},
+		Now:          func() time.Time { return now },
+	}
+
+	for _, test := range []struct {
+		name    string
+		header  any
+		payload any
+		want    time.Time
+		invalid bool
+	}{
+		{name: "absent"},
+		{name: "payload", payload: now.Unix(), want: now},
+		{name: "header", header: now.Unix(), want: now},
+		{name: "header overrides payload", header: now.Unix(), payload: now.Add(-time.Hour).Unix(), want: now},
+		{name: "string header", header: "123", invalid: true},
+		{name: "zero header", header: 0, invalid: true},
+		{name: "negative header", header: -1, invalid: true},
+		{name: "fractional header", header: 1.5, invalid: true},
+		{name: "out of range header", header: 1e20, invalid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			claims := jwt.MapClaims{"no": 1, "entries": []any{}}
+			if test.payload != nil {
+				claims["iat"] = test.payload
+			}
+
+			token := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
+			if test.header != nil {
+				token.Header["iat"] = test.header
+			}
+
+			raw, err := token.SignedString(pki.rootKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			blob, err := verifier.Verify(t.Context(), []byte(raw))
+			if test.invalid {
+				if !errors.Is(err, ErrVerify) {
+					t.Fatalf("Verify error = %v, want ErrVerify", err)
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if !blob.IssuedAt.Equal(test.want) {
+				t.Errorf("IssuedAt = %v, want %v", blob.IssuedAt, test.want)
+			}
+		})
+	}
+}
+
+func TestVerifierRejectsInvalidSignature(t *testing.T) {
+	now := time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)
+	pki := newTestPKI(t, now)
+	other := newTestPKI(t, now)
+	token := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{"no": 1, "entries": []any{}})
+
+	raw, err := token.SignedString(other.rootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	verifier := &Verifier{TrustAnchors: []*x509.Certificate{pki.root}}
+
+	_, err = verifier.Verify(t.Context(), []byte(raw))
+	if !errors.Is(err, ErrVerify) || !errors.Is(err, jwt.ErrTokenSignatureInvalid) {
+		t.Fatalf("Verify error = %v, want signature verification failure", err)
+	}
+}
+
 func TestVerifierHTTPPolicies(t *testing.T) {
 	verifier := &Verifier{Source: "https://mds.example.test/blob"}
 	if _, err := verifier.fetchX5UCertificates(t.Context(), "https://other.example.test/chain.pem"); err == nil || !strings.Contains(err.Error(), "same web origin") {
@@ -111,16 +194,19 @@ func TestVerifierHTTPPolicies(t *testing.T) {
 	if _, err := verifier.fetchX5UCertificates(t.Context(), "https://mds.example.test/chain.pem"); err == nil || !strings.Contains(err.Error(), "unexpected HTTP status") {
 		t.Fatalf("x5u redirect error = %v", err)
 	}
+
 	if _, err := verifier.fetchRevocationList(t.Context(), "https://crl.example.test/list"); err == nil || !strings.Contains(err.Error(), "unexpected HTTP status") {
 		t.Fatalf("CRL redirect error = %v", err)
 	}
 
 	verifier.HTTPClient = responseClient(http.StatusOK, []byte("1234"))
 	verifier.MaxX5UBytes = 3
+
 	verifier.MaxCRLBytes = 3
 	if _, err := verifier.fetchX5UCertificates(t.Context(), "https://mds.example.test/chain.pem"); err == nil || !strings.Contains(err.Error(), "object exceeds 3 bytes") {
 		t.Fatalf("x5u limit error = %v", err)
 	}
+
 	if _, err := verifier.fetchRevocationList(t.Context(), "https://crl.example.test/list"); err == nil || !strings.Contains(err.Error(), "object exceeds 3 bytes") {
 		t.Fatalf("CRL limit error = %v", err)
 	}
@@ -133,6 +219,7 @@ func newTestPKI(t *testing.T, now time.Time) testPKI {
 	if err != nil {
 		t.Fatalf("generate root key: %v", err)
 	}
+
 	rootTemplate := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
 		Subject:               pkix.Name{CommonName: "MDS Test Root"},
@@ -149,6 +236,7 @@ func newTestPKI(t *testing.T, now time.Time) testPKI {
 	if err != nil {
 		t.Fatalf("generate leaf key: %v", err)
 	}
+
 	leaf := createCertificate(t, &x509.Certificate{
 		SerialNumber:          big.NewInt(2),
 		Subject:               pkix.Name{CommonName: "MDS Test Signer"},
@@ -174,6 +262,7 @@ func createCertificate(
 	if err != nil {
 		t.Fatalf("create certificate: %v", err)
 	}
+
 	cert, err := x509.ParseCertificate(der)
 	if err != nil {
 		t.Fatalf("parse certificate: %v", err)

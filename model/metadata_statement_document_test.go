@@ -39,6 +39,7 @@ func TestParseMetadataStatementDocumentPreservesFieldRepresentations(t *testing.
 			t.Errorf("field %q is absent", name)
 			continue
 		}
+
 		if !bytes.Equal(raw, wantRaw) {
 			t.Errorf("field %q = %s, want %s", name, raw, wantRaw)
 		}
@@ -61,46 +62,57 @@ func TestMetadataStatementDocumentDecodeField(t *testing.T) {
 	}
 
 	var absent bool
+
 	present, err := document.DecodeField("absentValue", &absent)
 	if err != nil {
 		t.Fatalf("DecodeField(absentValue): %v", err)
 	}
+
 	if present {
 		t.Error("DecodeField(absentValue) present = true, want false")
 	}
 
 	nullValue := new(bool)
+
 	present, err = document.DecodeField("nullValue", &nullValue)
 	if err != nil {
 		t.Fatalf("DecodeField(nullValue): %v", err)
 	}
+
 	if !present {
 		t.Fatal("DecodeField(nullValue) present = false, want true")
 	}
+
 	if nullValue != nil {
 		t.Errorf("DecodeField(nullValue) = %v, want nil", *nullValue)
 	}
 
 	var falseValue bool
+
 	present, err = document.DecodeField("falseValue", &falseValue)
 	if err != nil {
 		t.Fatalf("DecodeField(falseValue): %v", err)
 	}
+
 	if !present {
 		t.Fatal("DecodeField(falseValue) present = false, want true")
 	}
+
 	if falseValue {
 		t.Error("DecodeField(falseValue) = true, want false")
 	}
 
 	var zeroValue int
+
 	present, err = document.DecodeField("zeroValue", &zeroValue)
 	if err != nil {
 		t.Fatalf("DecodeField(zeroValue): %v", err)
 	}
+
 	if !present {
 		t.Fatal("DecodeField(zeroValue) present = false, want true")
 	}
+
 	if zeroValue != 0 {
 		t.Errorf("DecodeField(zeroValue) = %d, want 0", zeroValue)
 	}
@@ -109,9 +121,11 @@ func TestMetadataStatementDocumentDecodeField(t *testing.T) {
 	if !present {
 		t.Fatal("DecodeField(wrongType) present = false, want true")
 	}
+
 	if err == nil {
 		t.Fatal("DecodeField(wrongType) succeeded")
 	}
+
 	if !strings.Contains(err.Error(), `field "wrongType"`) {
 		t.Errorf("DecodeField(wrongType) error = %q, want field context", err)
 	}
@@ -122,13 +136,16 @@ func TestMetadataStatementDocumentDecodeField(t *testing.T) {
 	}
 
 	var rejecting rejectingJSONValue
+
 	present, err = document.DecodeField("falseValue", &rejecting)
 	if !present {
 		t.Fatal("DecodeField(falseValue) present = false, want true")
 	}
+
 	if !errors.Is(err, errRejectJSONValue) {
 		t.Errorf("errors.Is(%v, errRejectJSONValue) = false", err)
 	}
+
 	if !strings.Contains(err.Error(), `field "falseValue"`) {
 		t.Errorf("DecodeField(falseValue) error = %q, want field context", err)
 	}
@@ -224,6 +241,7 @@ func TestParseMetadataStatementDocumentAcceptsEmptyObject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseMetadataStatementDocument: %v", err)
 	}
+
 	if len(document) != 0 {
 		t.Fatalf("len(document) = %d, want 0", len(document))
 	}
@@ -242,6 +260,11 @@ func TestParseMetadataStatementDocumentRejectsInvalidInput(t *testing.T) {
 		{name: "boolean", raw: `false`},
 		{name: "null", raw: `null`},
 		{name: "malformed object", raw: `{"description":`},
+		{name: "non-string member name", raw: `{1: true}`},
+		{name: "missing object comma", raw: `{"a":1 "b":2}`},
+		{name: "mismatched object delimiter", raw: `{"nested":{"a":1]}`},
+		{name: "mismatched array delimiter", raw: `{"nested":[1}}`},
+		{name: "unterminated array", raw: `{"nested":[1`},
 		{name: "empty", raw: ``},
 	}
 

@@ -37,17 +37,20 @@ func statusTransport(status int) http.RoundTripper {
 }
 
 func TestNewClientDefaultsMatchZeroValue(t *testing.T) {
-	client := NewClient(nil)
+	client := NewClient()
 
 	if client.source() != DefaultSource {
 		t.Fatalf("source = %q, want %q", client.source(), DefaultSource)
 	}
+
 	if client.cache() != defaultCache {
 		t.Fatal("cache does not use package-wide default")
 	}
+
 	if client.maxBlobBytes() != DefaultMaxBlobBytes {
 		t.Fatalf("max blob bytes = %d, want %d", client.maxBlobBytes(), DefaultMaxBlobBytes)
 	}
+
 	if client.cacheDir() == "" {
 		t.Fatal("default disk cache is disabled")
 	}
@@ -57,20 +60,70 @@ func TestWithCacheDirControlsWrites(t *testing.T) {
 	const source = "https://mds.example.test/cache-write"
 
 	cacheDir := t.TempDir()
+
 	client := NewClient(WithCacheDir(cacheDir))
 	if err := client.storeDiskCache(source, []byte("jwt"), time.Now()); err != nil {
 		t.Fatalf("store disk cache: %v", err)
 	}
+
 	path, err := client.diskCachePath(source)
 	if err != nil {
 		t.Fatalf("disk cache path: %v", err)
 	}
+
 	body, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read disk cache: %v", err)
 	}
+
 	if string(body) != "jwt" {
 		t.Fatalf("disk cache body = %q, want %q", body, "jwt")
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+		t.Errorf("cache permissions = %o, want owner-only access", info.Mode().Perm())
+	}
+
+	files, err := os.ReadDir(cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(files) != 1 || files[0].Name() != info.Name() {
+		t.Errorf("cache directory = %v, want only %s", files, info.Name())
+	}
+}
+
+func TestStoreDiskCacheCleansUpAfterRenameFailure(t *testing.T) {
+	const source = "https://mds.example.test/rename-failure"
+
+	client := &Client{CacheDir: t.TempDir()}
+
+	path, err := client.diskCachePath(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := client.storeDiskCache(source, []byte("jwt"), time.Now()); err == nil {
+		t.Fatal("store disk cache succeeded over an existing directory")
+	}
+
+	files, err := os.ReadDir(client.CacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(files) != 1 || !files[0].IsDir() {
+		t.Errorf("cache directory = %v, want only the original directory", files)
 	}
 }
 
@@ -79,6 +132,7 @@ func TestLookupRevalidationMarksDiskCacheFresh(t *testing.T) {
 
 	now := time.Date(2026, time.July, 10, 12, 0, 0, 0, time.UTC)
 	old := now.Add(-48 * time.Hour)
+
 	var requestedETag string
 
 	client := &Client{
@@ -99,6 +153,7 @@ func TestLookupRevalidationMarksDiskCacheFresh(t *testing.T) {
 	}
 
 	aaguid := uuid.New()
+
 	client.Cache.Set(client.cacheKey(source), &Blob{
 		Number:    1,
 		Entries:   map[uuid.UUID]*appmds.PayloadEntry{},
@@ -130,6 +185,7 @@ func TestLookupRevalidationMarksDiskCacheFresh(t *testing.T) {
 	if got := info.ModTime(); !got.Equal(now) {
 		t.Fatalf("disk cache modtime = %v, want %v", got, now)
 	}
+
 	if requestedETag != "1" {
 		t.Fatalf("If-None-Match = %q, want 1", requestedETag)
 	}
@@ -143,17 +199,21 @@ func TestLookupUsesDiskSerialAsETag(t *testing.T) {
 		Cache:    NewCache(),
 		CacheDir: t.TempDir(),
 	}
+
 	path, err := client.diskCachePath(source)
 	if err != nil {
 		t.Fatalf("disk cache path: %v", err)
 	}
+
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256"}`))
+
 	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"no":276,"entries":[]}`))
 	if err := os.WriteFile(path, []byte(header+"."+payload+".invalid"), 0o600); err != nil {
 		t.Fatalf("write invalid disk cache: %v", err)
 	}
 
 	var requestedETag string
+
 	client.HTTPClient = &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		requestedETag = request.Header.Get("If-None-Match")
 
@@ -169,6 +229,7 @@ func TestLookupUsesDiskSerialAsETag(t *testing.T) {
 	if !errors.Is(err, ErrFetch) {
 		t.Fatalf("Lookup error = %v, want %v", err, ErrFetch)
 	}
+
 	if requestedETag != "276" {
 		t.Fatalf("If-None-Match = %q, want 276", requestedETag)
 	}
@@ -182,16 +243,21 @@ func TestLookupRejectsNotModifiedForInvalidDiskCache(t *testing.T) {
 		Cache:    NewCache(),
 		CacheDir: t.TempDir(),
 	}
+
 	path, err := client.diskCachePath(source)
 	if err != nil {
 		t.Fatalf("disk cache path: %v", err)
 	}
+
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256"}`))
+
 	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"no":276,"entries":[]}`))
 	if err := os.WriteFile(path, []byte(header+"."+payload+".invalid"), 0o600); err != nil {
 		t.Fatalf("write invalid disk cache: %v", err)
 	}
+
 	var requestedETag string
+
 	client.HTTPClient = &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		requestedETag = request.Header.Get("If-None-Match")
 
@@ -207,6 +273,7 @@ func TestLookupRejectsNotModifiedForInvalidDiskCache(t *testing.T) {
 	if !errors.Is(err, ErrVerify) {
 		t.Fatalf("Lookup error = %v, want %v", err, ErrVerify)
 	}
+
 	if requestedETag != "276" {
 		t.Fatalf("If-None-Match = %q, want 276", requestedETag)
 	}
@@ -216,7 +283,9 @@ func TestLookupAllowsVerifiedStaleCacheOnRateLimit(t *testing.T) {
 	const source = "https://mds.example.test/rate-limit"
 
 	now := time.Date(2026, time.July, 10, 12, 0, 0, 0, time.UTC)
+
 	var fetches atomic.Int64
+
 	client := &Client{
 		Source:   source,
 		Cache:    NewCache(),
@@ -224,6 +293,7 @@ func TestLookupAllowsVerifiedStaleCacheOnRateLimit(t *testing.T) {
 		Now:      func() time.Time { return now },
 		HTTPClient: &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 			fetches.Add(1)
+
 			return &http.Response{
 				StatusCode: http.StatusTooManyRequests,
 				Body:       http.NoBody,
@@ -234,6 +304,7 @@ func TestLookupAllowsVerifiedStaleCacheOnRateLimit(t *testing.T) {
 	}
 
 	aaguid := uuid.New()
+
 	client.Cache.Set(client.cacheKey(source), &Blob{
 		Number:    1,
 		Entries:   map[uuid.UUID]*appmds.PayloadEntry{},
@@ -252,14 +323,17 @@ func TestLookupAllowsVerifiedStaleCacheOnRateLimit(t *testing.T) {
 	if _, err := client.Lookup(context.Background(), aaguid, LookupOptions{Refresh: true}); err != nil {
 		t.Fatalf("second lookup: %v", err)
 	}
+
 	if got := fetches.Load(); got != 1 {
 		t.Fatalf("fetches = %d, want 1 during minimum request delay", got)
 	}
 
 	now = now.Add(time.Hour)
+
 	if _, err := client.Lookup(context.Background(), aaguid, LookupOptions{Refresh: true}); err != nil {
 		t.Fatalf("lookup after minimum delay: %v", err)
 	}
+
 	if got := fetches.Load(); got != 2 {
 		t.Fatalf("fetches = %d, want 2 after minimum request delay", got)
 	}
@@ -304,6 +378,7 @@ func TestLookupDoesNotMaskContextErrorWithStaleCache(t *testing.T) {
 				Entries:   map[uuid.UUID]*appmds.PayloadEntry{},
 				CheckedAt: time.Now().Add(-48 * time.Hour),
 			})
+
 			ctx, cancel := test.context()
 			defer cancel()
 
@@ -423,16 +498,20 @@ func TestLookupKeepsVerifiedMemoryCacheWhenRemoteVerificationFails(t *testing.T)
 	if err != nil {
 		t.Fatalf("Lookup: %v", err)
 	}
+
 	if !result.Cached || result.Entry != entry || result.BlobNumber != local.Number {
 		t.Fatalf("result = %+v, want verified local entry", result)
 	}
+
 	cached, found := cache.Get(cacheKey)
 	if !found || cached.Number != local.Number || cached.Entries[aaguid] != entry {
 		t.Fatalf("cached blob = %#v, %t; want verified local data", cached, found)
 	}
+
 	if !cached.CheckedAt.Equal(local.CheckedAt) {
 		t.Fatalf("CheckedAt = %v, want %v", cached.CheckedAt, local.CheckedAt)
 	}
+
 	if !errors.Is(result.RefreshErr, ErrVerify) {
 		t.Fatalf("refresh = %+v, want verification failure", result.RefreshErr)
 	}
@@ -445,8 +524,11 @@ func TestLookupCoordinatesRefreshByCacheKey(t *testing.T) {
 	source := "https://mds.example.test/concurrent"
 	release := make(chan struct{})
 	started := make(chan struct{})
+
 	var startOnce sync.Once
+
 	var fetches atomic.Int64
+
 	client := &Client{
 		Source:   source,
 		Cache:    cache,
@@ -467,12 +549,15 @@ func TestLookupCoordinatesRefreshByCacheKey(t *testing.T) {
 
 	begin := make(chan struct{})
 	errs := make(chan error, callers)
+
 	var ready sync.WaitGroup
 	ready.Add(callers)
+
 	for range callers {
 		go func() {
 			ready.Done()
 			<-begin
+
 			_, err := client.Lookup(t.Context(), uuid.New(), LookupOptions{})
 			errs <- err
 		}()
@@ -489,6 +574,7 @@ func TestLookupCoordinatesRefreshByCacheKey(t *testing.T) {
 			t.Fatalf("Lookup error = %v, want %v", err, ErrFetch)
 		}
 	}
+
 	if got := fetches.Load(); got != 1 {
 		t.Fatalf("fetches = %d, want 1", got)
 	}
@@ -501,15 +587,18 @@ func waitForRefreshWaiters(t *testing.T, cache *simpleCache, key string, want in
 	for time.Now().Before(deadline) {
 		cache.mu.RLock()
 		call := cache.refresh[key]
+
 		got := 0
 		if call != nil {
 			got = call.waiters
 		}
+
 		cache.mu.RUnlock()
 
 		if got == want {
 			return
 		}
+
 		runtime.Gosched()
 	}
 
@@ -545,11 +634,13 @@ func TestBlobFetchRejectsRedirectAndOversizeResponse(t *testing.T) {
 			}
 
 			_, _, _, err := client.fetchAndVerify(t.Context(), client.Source, 0)
+
 			if test.wantStatus != 0 {
 				var statusErr *HTTPStatusError
 				if !errors.As(err, &statusErr) || statusErr.StatusCode != test.wantStatus {
 					t.Fatalf("fetchAndVerify error = %v, want HTTP status %d", err, test.wantStatus)
 				}
+
 				return
 			}
 

@@ -9,6 +9,7 @@ import (
 
 // LookupResult is the public result of a verified FIDO Metadata Service AAGUID lookup.
 // Signed metadata describes an authenticator model; it does not authenticate a device.
+// Entry is non-nil when Found is true and shares the immutable cached entry.
 type LookupResult struct {
 	AAGUID     uuid.UUID     `json:"aaguid"`
 	Found      bool          `json:"found"`

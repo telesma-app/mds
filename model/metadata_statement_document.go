@@ -32,6 +32,7 @@ func validateMetadataStatementDocument(raw []byte) error {
 	if !utf8.Valid(raw) {
 		return errors.New("invalid UTF-8")
 	}
+
 	if err := validateJSONUnicodeEscapes(raw); err != nil {
 		return err
 	}
@@ -43,9 +44,11 @@ func validateMetadataStatementDocument(raw []byte) error {
 	if err != nil {
 		return err
 	}
+
 	if delimiter, ok := token.(json.Delim); !ok || delimiter != '{' {
 		return errors.New("top-level value must be an object")
 	}
+
 	if err := validateJSONObject(decoder); err != nil {
 		return err
 	}
@@ -63,19 +66,18 @@ func validateMetadataStatementDocument(raw []byte) error {
 
 func validateJSONObject(decoder *json.Decoder) error {
 	names := make(map[string]struct{})
+
 	for decoder.More() {
 		token, err := decoder.Token()
 		if err != nil {
 			return err
 		}
 
-		name, ok := token.(string)
-		if !ok {
-			return errors.New("object member name is not a string")
-		}
+		name := token.(string)
 		if _, duplicate := names[name]; duplicate {
 			return fmt.Errorf("duplicate object member %q", name)
 		}
+
 		names[name] = struct{}{}
 
 		if err := validateJSONValue(decoder); err != nil {
@@ -83,7 +85,9 @@ func validateJSONObject(decoder *json.Decoder) error {
 		}
 	}
 
-	return consumeJSONDelimiter(decoder, '}')
+	_, err := decoder.Token()
+
+	return err
 }
 
 func validateJSONArray(decoder *json.Decoder) error {
@@ -93,7 +97,9 @@ func validateJSONArray(decoder *json.Decoder) error {
 		}
 	}
 
-	return consumeJSONDelimiter(decoder, ']')
+	_, err := decoder.Token()
+
+	return err
 }
 
 func validateJSONValue(decoder *json.Decoder) error {
@@ -102,31 +108,14 @@ func validateJSONValue(decoder *json.Decoder) error {
 		return err
 	}
 
-	delimiter, ok := token.(json.Delim)
-	if !ok {
-		return nil
-	}
-
-	switch delimiter {
-	case '{':
+	switch token {
+	case json.Delim('{'):
 		return validateJSONObject(decoder)
-	case '[':
+	case json.Delim('['):
 		return validateJSONArray(decoder)
 	default:
-		return fmt.Errorf("unexpected delimiter %q", delimiter)
+		return nil
 	}
-}
-
-func consumeJSONDelimiter(decoder *json.Decoder, want json.Delim) error {
-	token, err := decoder.Token()
-	if err != nil {
-		return err
-	}
-	if delimiter, ok := token.(json.Delim); !ok || delimiter != want {
-		return fmt.Errorf("unexpected delimiter %v", token)
-	}
-
-	return nil
 }
 
 func validateJSONUnicodeEscapes(raw []byte) error {
@@ -139,6 +128,7 @@ func validateJSONUnicodeEscapes(raw []byte) error {
 		if err != nil {
 			return err
 		}
+
 		offset = end
 	}
 
@@ -154,6 +144,7 @@ func validateJSONStringUnicodeEscapes(raw []byte, offset int) (int, error) {
 			if offset+1 >= len(raw) {
 				return 0, errors.New("unterminated string escape")
 			}
+
 			if raw[offset+1] != 'u' {
 				offset += 2
 
@@ -164,6 +155,7 @@ func validateJSONStringUnicodeEscapes(raw []byte, offset int) (int, error) {
 			if !ok {
 				return 0, errors.New("invalid Unicode escape")
 			}
+
 			offset += 6
 
 			switch {
@@ -176,6 +168,7 @@ func validateJSONStringUnicodeEscapes(raw []byte, offset int) (int, error) {
 				if !ok || low < 0xdc00 || low > 0xdfff {
 					return 0, errors.New("high surrogate is not followed by a low surrogate")
 				}
+
 				offset += 6
 			case codeUnit >= 0xdc00 && codeUnit <= 0xdfff:
 				return 0, errors.New("low surrogate is not preceded by a high surrogate")
@@ -197,6 +190,7 @@ func decodeJSONHexCodeUnit(raw []byte, offset int) (uint16, bool) {
 	var value uint16
 	for _, digit := range raw[offset : offset+4] {
 		value <<= 4
+
 		switch {
 		case digit >= '0' && digit <= '9':
 			value |= uint16(digit - '0')

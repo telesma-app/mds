@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -67,10 +66,6 @@ func (v *Verifier) Verify(ctx context.Context, raw []byte) (*Blob, error) {
 		return nil, fmt.Errorf("%w: %w", ErrVerify, err)
 	}
 
-	if !token.Valid {
-		return nil, fmt.Errorf("%w: invalid JWT signature", ErrVerify)
-	}
-
 	issuedAt, err := tokenIssuedAt(token.Header["iat"], claims.IssuedAt)
 	if err != nil {
 		return nil, err
@@ -98,11 +93,7 @@ func (v *Verifier) signingKey(ctx context.Context, token *jwt.Token) (any, error
 	}
 
 	if len(certs) == 0 {
-		anchors, err := v.trustAnchors()
-		if err != nil {
-			return nil, err
-		}
-
+		anchors := v.trustAnchors()
 		if len(anchors) != 1 {
 			return nil, fmt.Errorf("%w: exactly one trust anchor is required when JWT header has neither x5u nor x5c", ErrVerify)
 		}
@@ -152,6 +143,7 @@ func (v *Verifier) headerCertificates(ctx context.Context, token *jwt.Token) ([]
 		if err != nil {
 			return nil, fmt.Errorf("%w: parse x5c certificate: %w", ErrVerify, err)
 		}
+
 		certs = append(certs, cert)
 	}
 
@@ -201,17 +193,8 @@ func (v *Verifier) fetchX5UCertificates(ctx context.Context, rawURL string) ([]*
 }
 
 func (v *Verifier) verifyCertificateChain(ctx context.Context, certs []*x509.Certificate) error {
-	if len(certs) == 0 {
-		return fmt.Errorf("%w: certificate chain is empty", ErrVerify)
-	}
-
-	anchors, err := v.trustAnchors()
-	if err != nil {
-		return err
-	}
-
 	roots := x509.NewCertPool()
-	for _, anchor := range anchors {
+	for _, anchor := range v.trustAnchors() {
 		roots.AddCert(anchor)
 	}
 
@@ -228,10 +211,6 @@ func (v *Verifier) verifyCertificateChain(ctx context.Context, certs []*x509.Cer
 	})
 	if err != nil {
 		return fmt.Errorf("%w: certificate chain: %w", ErrVerify, err)
-	}
-
-	if len(chains) == 0 {
-		return fmt.Errorf("%w: certificate chain verification returned no chains", ErrVerify)
 	}
 
 	return v.verifyCertificateRevocation(ctx, chains[0])
@@ -253,6 +232,7 @@ func (v *Verifier) verifyCertificateNotRevoked(ctx context.Context, cert, issuer
 	}
 
 	var lastErr error
+
 	for _, distributionPoint := range cert.CRLDistributionPoints {
 		crl, err := v.fetchRevocationList(ctx, distributionPoint)
 		if err != nil {
@@ -283,11 +263,7 @@ func (v *Verifier) verifyCertificateNotRevoked(ctx context.Context, cert, issuer
 		return nil
 	}
 
-	if lastErr != nil {
-		return lastErr
-	}
-
-	return fmt.Errorf("%w: certificate %s has no usable CRL distribution points", ErrVerify, cert.Subject.String())
+	return lastErr
 }
 
 func (v *Verifier) fetchRevocationList(ctx context.Context, rawURL string) (*x509.RevocationList, error) {
@@ -337,23 +313,12 @@ func (v *Verifier) fetchRevocationList(ctx context.Context, rawURL string) (*x50
 	return crl, nil
 }
 
-func (v *Verifier) trustAnchors() ([]*x509.Certificate, error) {
+func (v *Verifier) trustAnchors() []*x509.Certificate {
 	if len(v.TrustAnchors) == 0 {
 		return DefaultTrustAnchors()
 	}
 
-	anchors := make([]*x509.Certificate, 0, len(v.TrustAnchors))
-	for _, anchor := range v.TrustAnchors {
-		if anchor != nil {
-			anchors = append(anchors, anchor)
-		}
-	}
-
-	if len(anchors) == 0 {
-		return nil, fmt.Errorf("%w: trust anchor set is empty", ErrVerify)
-	}
-
-	return anchors, nil
+	return v.TrustAnchors
 }
 
 func (v *Verifier) httpClient() *http.Client {
@@ -395,52 +360,23 @@ func (v *Verifier) maxCRLBytes() int64 {
 }
 
 func tokenIssuedAt(rawHeader any, payloadIssuedAt *jwt.NumericDate) (time.Time, error) {
-	headerIssuedAt, err := parseOptionalHeaderIssuedAt(rawHeader)
-	if err != nil {
-		return time.Time{}, err
-	}
+	if rawHeader == nil {
+		if payloadIssuedAt != nil {
+			return payloadIssuedAt.UTC(), nil
+		}
 
-	if !headerIssuedAt.IsZero() {
-		return headerIssuedAt, nil
-	}
-
-	if payloadIssuedAt != nil {
-		return payloadIssuedAt.Time.UTC(), nil
-	}
-
-	return time.Time{}, nil
-}
-
-func parseOptionalHeaderIssuedAt(raw any) (time.Time, error) {
-	if raw == nil {
 		return time.Time{}, nil
 	}
 
-	var seconds int64
-	switch value := raw.(type) {
-	case float64:
-		seconds = int64(value)
-		if value <= 0 || value != float64(seconds) {
-			return time.Time{}, fmt.Errorf("%w: JWT header iat must be a positive integer", ErrVerify)
-		}
-	case json.Number:
-		parsed, err := value.Int64()
-		if err != nil || parsed <= 0 {
-			return time.Time{}, fmt.Errorf("%w: JWT header iat must be a positive integer", ErrVerify)
-		}
-		seconds = parsed
-	case int64:
-		if value <= 0 {
-			return time.Time{}, fmt.Errorf("%w: JWT header iat must be a positive integer", ErrVerify)
-		}
-		seconds = value
-	case int:
-		if value <= 0 {
-			return time.Time{}, fmt.Errorf("%w: JWT header iat must be a positive integer", ErrVerify)
-		}
-		seconds = int64(value)
-	default:
+	// The JWT parser decodes JSON header numbers as float64.
+	value, ok := rawHeader.(float64)
+	if !ok {
 		return time.Time{}, fmt.Errorf("%w: JWT header iat must be numeric", ErrVerify)
+	}
+
+	seconds := int64(value)
+	if value <= 0 || value != float64(seconds) {
+		return time.Time{}, fmt.Errorf("%w: JWT header iat must be a positive integer", ErrVerify)
 	}
 
 	return time.Unix(seconds, 0).UTC(), nil
@@ -448,6 +384,7 @@ func parseOptionalHeaderIssuedAt(raw any) (time.Time, error) {
 
 func parseCertificateChain(data []byte) ([]*x509.Certificate, error) {
 	var certs []*x509.Certificate
+
 	rest := data
 	for {
 		block, remaining := pem.Decode(rest)
@@ -456,6 +393,7 @@ func parseCertificateChain(data []byte) ([]*x509.Certificate, error) {
 		}
 
 		rest = remaining
+
 		if block.Type != "CERTIFICATE" {
 			continue
 		}
@@ -464,6 +402,7 @@ func parseCertificateChain(data []byte) ([]*x509.Certificate, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%w: parse PEM certificate: %w", ErrVerify, err)
 		}
+
 		certs = append(certs, cert)
 	}
 
@@ -485,6 +424,7 @@ func parseCertificateChain(data []byte) ([]*x509.Certificate, error) {
 
 func readLimited(r io.Reader, limit int64) ([]byte, error) {
 	var buf bytes.Buffer
+
 	n, err := buf.ReadFrom(io.LimitReader(r, limit+1))
 	if err != nil {
 		return nil, err

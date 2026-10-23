@@ -3,7 +3,6 @@ package mdsverify
 import (
 	"crypto/x509"
 	"encoding/pem"
-	"fmt"
 	"sync"
 )
 
@@ -39,29 +38,19 @@ N3ec592kD3ZDZopD8p/7DEJ4Y9HiD2971KE9dJeFt0g5QdYg/NA6s/rob8SKunE3
 vouXsXgxT7PntgMTzlSdriVZzH81Xwj3QEUxeCp6
 -----END CERTIFICATE-----`
 
-var (
-	defaultTrustAnchorOnce sync.Once
-	defaultTrustAnchorCert *x509.Certificate
-	defaultTrustAnchorErr  error
-)
+var defaultTrustAnchor = sync.OnceValue(func() *x509.Certificate {
+	block, _ := pem.Decode([]byte(globalSignR46RootPEM))
 
-// DefaultTrustAnchors returns the pinned GlobalSign R46 root used by MDS3.
-func DefaultTrustAnchors() ([]*x509.Certificate, error) {
-	defaultTrustAnchorOnce.Do(func() {
-		block, _ := pem.Decode([]byte(globalSignR46RootPEM))
-		if block == nil {
-			defaultTrustAnchorErr = fmt.Errorf("%w: decode GlobalSign R46 trust anchor", ErrVerify)
-			return
-		}
-
-		defaultTrustAnchorCert, defaultTrustAnchorErr = x509.ParseCertificate(block.Bytes)
-		if defaultTrustAnchorErr != nil {
-			defaultTrustAnchorErr = fmt.Errorf("%w: parse GlobalSign R46 trust anchor: %w", ErrVerify, defaultTrustAnchorErr)
-		}
-	})
-	if defaultTrustAnchorErr != nil {
-		return nil, defaultTrustAnchorErr
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		panic(err)
 	}
 
-	return []*x509.Certificate{defaultTrustAnchorCert}, nil
+	return cert
+})
+
+// DefaultTrustAnchors returns the pinned GlobalSign R46 root used by MDS3.
+// The returned certificate is immutable.
+func DefaultTrustAnchors() []*x509.Certificate {
+	return []*x509.Certificate{defaultTrustAnchor()}
 }

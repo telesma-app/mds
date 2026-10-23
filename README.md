@@ -68,6 +68,14 @@ go test ./...
 go vet ./...
 ```
 
+## Linting
+
+With golangci-lint v2 installed, run:
+
+```sh
+golangci-lint run ./...
+```
+
 ## License
 
 Apache License 2.0. See [`LICENSE`](LICENSE).

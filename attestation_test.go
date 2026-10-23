@@ -43,6 +43,7 @@ func TestAssessAttestationTrustsChainAnchoredByMetadata(t *testing.T) {
 	if assessment.Status != model.AttestationTrustStatusTrusted {
 		t.Fatalf("status = %q, want trusted; issues = %v", assessment.Status, assessment.Issues)
 	}
+
 	if assessment.CertificateChainTrusted == nil || !*assessment.CertificateChainTrusted {
 		t.Fatalf("certificate chain trusted = %v, want true", assessment.CertificateChainTrusted)
 	}
@@ -79,6 +80,7 @@ func TestAssessAttestationRejectsRevokedAuthenticator(t *testing.T) {
 	if assessment.Status != model.AttestationTrustStatusUntrusted {
 		t.Fatalf("status = %q, want untrusted", assessment.Status)
 	}
+
 	if assessment.CertificateChainTrusted == nil || !*assessment.CertificateChainTrusted {
 		t.Fatalf("certificate chain trusted = %v, want true", assessment.CertificateChainTrusted)
 	}
@@ -86,6 +88,7 @@ func TestAssessAttestationRejectsRevokedAuthenticator(t *testing.T) {
 
 func TestAssessAttestationMarksSelfAttestationNotApplicable(t *testing.T) {
 	aaguid := uuid.MustParse("eabb46cc-e241-80bf-ae9e-96fa6d2975cf")
+
 	assessment := AssessAttestation(AttestationEvidence{
 		AAGUID: aaguid,
 		Type:   AttestationTypeSelf,
@@ -200,13 +203,16 @@ func assessmentCertificate(
 	if isCA {
 		template.KeyUsage |= x509.KeyUsageCertSign
 	}
+
 	if parent == nil {
 		parent = template
 	}
+
 	raw, err := x509.CreateCertificate(rand.Reader, template, parent, &subjectKey.PublicKey, parentKey)
 	if err != nil {
 		t.Fatalf("create certificate: %v", err)
 	}
+
 	certificate, err := x509.ParseCertificate(raw)
 	if err != nil {
 		t.Fatalf("parse certificate: %v", err)

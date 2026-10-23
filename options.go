@@ -4,12 +4,11 @@ package mds
 type Option func(*Client)
 
 // NewClient creates an MDS client with cache-first defaults.
+// Each option must be non-nil.
 func NewClient(options ...Option) *Client {
 	client := &Client{}
 	for _, option := range options {
-		if option != nil {
-			option(client)
-		}
+		option(client)
 	}
 
 	return client

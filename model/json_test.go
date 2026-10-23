@@ -9,6 +9,7 @@ import (
 
 func TestMetadataStatementDecodesAuthenticatorGetInfoByteStringsFromHex(t *testing.T) {
 	var statement MetadataStatement
+
 	err := json.Unmarshal([]byte(`{
 		"description":"Authenticator",
 		"authenticatorGetInfo":{
@@ -40,6 +41,7 @@ func TestMetadataStatementDecodesAuthenticatorGetInfoByteStringsFromHex(t *testi
 
 func TestMetadataStatementRejectsInvalidAuthenticatorGetInfoHex(t *testing.T) {
 	var statement MetadataStatement
+
 	err := json.Unmarshal([]byte(`{
 		"authenticatorGetInfo":{"pinComplexityPolicyURL":"not hex"}
 	}`), &statement)
@@ -51,22 +53,21 @@ func TestMetadataStatementRejectsInvalidAuthenticatorGetInfoHex(t *testing.T) {
 func TestMDSJSONFieldContracts(t *testing.T) {
 	const batchCertificate = "batch-certificate"
 
-	statusJSON, err := json.Marshal(StatusReport{BatchCertificate: stringPointer(batchCertificate)})
+	statusJSON, err := json.Marshal(StatusReport{BatchCertificate: new(batchCertificate)})
 	if err != nil {
 		t.Fatalf("marshal status report: %v", err)
 	}
+
 	if !strings.Contains(string(statusJSON), `"batchCertificate":"batch-certificate"`) {
 		t.Fatalf("status JSON = %s, want batchCertificate", statusJSON)
 	}
+
 	emptyStatusJSON, err := json.Marshal(StatusReport{})
 	if err != nil {
 		t.Fatalf("marshal empty status report: %v", err)
 	}
+
 	if strings.Contains(string(emptyStatusJSON), "batchCertificate") {
 		t.Fatalf("empty status JSON = %s, want omitted batchCertificate", emptyStatusJSON)
 	}
-}
-
-func stringPointer(value string) *string {
-	return &value
 }
