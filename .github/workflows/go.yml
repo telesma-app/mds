@@ -10,6 +10,9 @@ on:
 permissions:
   contents: read
 
+env:
+  GOWORK: "off"
+
 jobs:
   build:
     strategy:
@@ -35,8 +38,6 @@ jobs:
         run: go vet ./...
 
   lint:
-    env:
-      GOWORK: "off"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
