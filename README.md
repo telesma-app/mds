@@ -28,15 +28,45 @@ See [`go.mod`](go.mod) for the required Go version.
 
 ## Quick start
 
-```go
-client := mds.NewClient()
+Pass the authenticator's AAGUID with `-aaguid`. This example downloads and
+verifies metadata; it does not open or authenticate the device.
 
-result, err := client.Lookup(ctx, aaguid, mds.LookupOptions{})
-if err != nil {
-    return err
-}
-if result.Found {
-    fmt.Println(result.Entry.MetadataStatement.Description)
+```go
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log"
+	"time"
+	"uuid"
+
+	"github.com/telesma-app/mds"
+)
+
+func main() {
+	input := flag.String("aaguid", "", "authenticator AAGUID")
+	flag.Parse()
+
+	aaguid, err := uuid.Parse(*input)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	client := mds.NewClient()
+	result, err := client.Lookup(ctx, aaguid, mds.LookupOptions{})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if result.Found {
+		fmt.Println(result.Entry.MetadataStatement.Description)
+	} else {
+		fmt.Println("no metadata found")
+	}
 }
 ```
 
@@ -61,21 +91,19 @@ and status reports. Parse and verify the attestation with
 first; the relying party owns acceptance policy. An AAGUID lookup alone does not
 authenticate the connected device.
 
-## Testing
+## Development
 
 ```sh
-go test ./...
-go vet ./...
+GOWORK=off go test ./...
+GOWORK=off go vet ./...
 ```
-
-## Linting
 
 With golangci-lint v2 installed, run:
 
 ```sh
-golangci-lint run ./...
+GOWORK=off golangci-lint run ./...
 ```
 
 ## License
 
-Apache License 2.0. See [`LICENSE`](LICENSE).
+[Apache License 2.0](LICENSE).
